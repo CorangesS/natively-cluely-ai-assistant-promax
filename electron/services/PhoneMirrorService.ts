@@ -21,7 +21,7 @@ export interface PhoneMirrorInfo {
   loopbackUrl: string | null;
   primaryUrl: string | null;
   lanUrls: string[];
-  /** Phone (LAN) token — embedded in loopbackUrl/lanUrls/QR. NOT the extension token. */
+  /** Legacy field: always null for anonymous LAN control. */
   token: string | null;
   /** Loopback-scoped extension token — used for the manual `port:extToken` pairing string. */
   extToken: string | null;
@@ -108,9 +108,10 @@ export interface PhoneTranscriptSegment {
 
 /** Command sent from the phone browser to the desktop. */
 export type PhoneCommand =
-  | { type: 'chat'; message: string }
+  | { type: 'chat'; message: string; captureScreen?: boolean }
   | { type: 'action'; action: string }
   | { type: 'screenshot' }
+  | { type: 'cancel' }
   /** Take a screenshot or photo off the overlay's tray (the phone names it by id; listeners get its path). */
   | { type: 'detach'; path: string };
 
@@ -239,17 +240,9 @@ export class PhoneMirrorService {
   // (loopback only), '0.0.0.0' when LAN is on (any interface). Mirrored into
   // PhoneMirrorInfo.bindAddress so the renderer can label it.
   private bindAddress: '127.0.0.1' | '0.0.0.0' = '127.0.0.1';
-  // Phone token: LAN-scoped. Serves the phone HTML page (`/`) and authenticates
-  // phone WebSocket clients. Embedded in the QR/pairing URL, which travels over
-  // plaintext HTTP on the LAN when exposeOnLan is on — so it is per-session (NOT
-  // persisted) and "Rotate token" cycles it.
-  private token = '';
-  // Extension token: loopback-scoped. Issued by /pair and required by /dom (the
-  // capture capability) + extension WebSocket clients. Persisted (encrypted) so
-  // the extension pairs once. Kept separate from the phone token so a sniffed LAN
-  // phone token can never reach /dom. See the token-split rationale in CredentialsManager.
+  // The extension credential remains separate from anonymous phone access.
   private extToken = '';
-  private exposeOnLan = false;
+  private exposeOnLan = true;
   private history: PersistedMessage[] = [];
   // Single string instead of token array: O(1) append, O(1) replay (one WS frame).
   private livePartial: { streamId: string; content: string } | null = null;
@@ -345,7 +338,6 @@ export class PhoneMirrorService {
    * do not re-prompt. Resets on app restart so a fresh run gets a fresh
    * confirmation. Cleared by markLanBindDialogShown() in the IPC handler.
    */
-  private hasShownLanBindDialog = false;
 
   static getInstance(): PhoneMirrorService {
     if (!PhoneMirrorService._instance) PhoneMirrorService._instance = new PhoneMirrorService();
@@ -391,15 +383,6 @@ export class PhoneMirrorService {
   }
 
   async setExposeOnLan(value: boolean): Promise<PhoneMirrorInfo> {
-    // LAN exposure binds the server to 0.0.0.0 so any device on the same Wi-Fi
-    // can connect with the pairing token. That is a deliberate security widening,
-    // so require an explicit confirmation in the IPC handler — the per-session
-    // sentinel short-circuits the prompt for subsequent in-session flips.
-    // The phone token is also rotated on every flip (see _start → generateToken)
-    // to invalidate any prior QR that may have already leaked to the LAN.
-    if (value === true && !this.hasShownLanBindDialog) {
-      throw new LANBindConfirmationRequired();
-    }
     SettingsManager.getInstance().set('phoneMirrorExposeOnLan', value);
     if (!this.isRunning()) {
       this.exposeOnLan = value;
@@ -408,37 +391,13 @@ export class PhoneMirrorService {
     return this.restart({ exposeOnLan: value });
   }
 
-  /**
-   * IPC-layer helper: flip the per-session "user has confirmed LAN bind" sentinel
-   * AFTER the dialog has returned an explicit Allow. Without this the next
-   * setExposeOnLan(true) would re-prompt unnecessarily.
-   */
-  markLanBindDialogShown(): void {
-    this.hasShownLanBindDialog = true;
-  }
+  /** Compatibility methods for older callers; this fork needs no LAN dialog. */
+  markLanBindDialogShown(): void {}
 
-  /**
-   * Whether phone-mirror:enable binding with `exposeOnLan` needs the "Allow
-   * LAN access?" consent first: the same per-session rule setExposeOnLan()
-   * enforces. A saved phoneMirrorExposeOnLan does not satisfy it, because
-   * _start() persists whatever it was given and enable used to bind 0.0.0.0
-   * without asking. (The boot-time restore still binds from the saved value
-   * without a prompt, as it always has; that path is not an IPC request.)
-   */
-  needsLanBindConfirmation(exposeOnLan: boolean): boolean {
-    if (exposeOnLan !== true || this.hasShownLanBindDialog) return false;
-    // Already on the LAN, or starting there (_start sets exposeOnLan first):
-    // start() returns that server, so this call binds nothing new, and a
-    // decline could not stop the bind already under way.
-    return !((this.isRunning() || this.starting !== null) && this.exposeOnLan);
-  }
+  needsLanBindConfirmation(_exposeOnLan: boolean): boolean { return false; }
 
   async rotateToken(): Promise<PhoneMirrorInfo> {
-    // Rotate BOTH secrets — the "Rotate token" button is the single deliberate
-    // reset for every paired surface. The phone token is per-session anyway; the
-    // extension token is persisted, so rotating it (and saving) is the one thing
-    // that forces a deliberate extension re-pair, as documented in CONTRACT.md.
-    this.token = generateToken();
+    // Only the browser extension has a credential; phone URLs stay unchanged.
     this.extToken = generateToken();
     try {
       CredentialsManager.getInstance().setPhoneMirrorToken(this.extToken);
@@ -446,7 +405,9 @@ export class PhoneMirrorService {
       /* credentials not ready — token still rotates for this session */
     }
     this.invalidateQrCache();
-    this.disconnectAllClients(4401, 'Token rotated');
+    for (const client of this.wss?.clients ?? []) {
+      if (this.extTokenSockets.has(client)) client.close(4401, 'Extension token rotated');
+    }
     const info = await this.snapshot();
     this.emitStatus(info);
     return info;
@@ -1178,6 +1139,9 @@ export class PhoneMirrorService {
    * control frame (so the phone-command path is skipped).
    */
   private handleExtensionFrame(ws: WebSocket, msg: Record<string, unknown>): boolean {
+    if (!this.extTokenSockets.has(ws)) {
+      return ['hello', 'meeting-tabs', 'meeting-people', 'active', 'capture-ack', 'tabs'].includes(String(msg.type));
+    }
     switch (msg.type) {
       case 'hello':
         if (msg.role === 'extension') {
@@ -1307,9 +1271,9 @@ export class PhoneMirrorService {
       this.cachedInfo = info;
       return info;
     }
-    const loopbackUrl = `http://127.0.0.1:${this.port}/?t=${this.token}`;
+    const loopbackUrl = `http://127.0.0.1:${this.port}/`;
     const lanUrls = this.exposeOnLan
-      ? getLanIPs().map((ip) => `http://${ip}:${this.port}/?t=${this.token}`)
+      ? getLanIPs().map((ip) => `http://${ip}:${this.port}/`)
       : [];
     // If LAN is on, only advertise a real LAN URL — falling back to 127.0.0.1
     // would print a QR code the phone cannot reach (loopback ≠ phone).
@@ -1335,7 +1299,7 @@ export class PhoneMirrorService {
       loopbackUrl,
       primaryUrl,
       lanUrls,
-      token: this.token,
+      token: null,
       extToken: this.extToken,
       qrDataUrl,
       clients: this.phoneClientCount(),
@@ -1356,9 +1320,6 @@ export class PhoneMirrorService {
 
   private async _start(exposeOnLan: boolean, persistEnabled: boolean): Promise<PhoneMirrorInfo> {
     this.exposeOnLan = exposeOnLan;
-    // Phone token: fresh per session. It rides the LAN in a plaintext QR URL, so a
-    // short-lived secret is the safer default — the phone re-scans each session.
-    this.token = generateToken();
     // Extension token: reuse the persisted value so the extension pairs ONCE and
     // survives restarts; mint + persist only when there is none yet. Only a
     // deliberate Rotate changes it (see rotateToken).
@@ -1412,7 +1373,6 @@ export class PhoneMirrorService {
     this.wss = null;
     this.server = null;
     this.port = 0;
-    this.token = '';
     this.extToken = '';
     this.livePartial = null;
     this.cancelLiveRender();
@@ -1456,6 +1416,12 @@ export class PhoneMirrorService {
     if (server) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  }
+
+  /** A browser on another website cannot issue commands to the local app. */
+  private isSameOrigin(req: http.IncomingMessage): boolean {
+    const origin = req.headers.origin;
+    return !origin || origin === `http://${req.headers.host}`;
   }
 
   private handleHttp(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -1753,13 +1719,6 @@ export class PhoneMirrorService {
       return;
     }
 
-    // No token, or a stale one (a reload after Rotate token): still 401, but
-    // with the page itself, marked refused, so it opens on its own lock screen
-    // ("needs a pairing link" / "has expired") instead of a bare line of text.
-    // The page holds no secrets; the socket and every endpoint still need the
-    // token. HEAD stays bodiless (the page probes it to tell an expired link).
-    const refused = !provided || !timingSafeEqualStr(provided, this.token);
-
     const csp = [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline'",
@@ -1770,7 +1729,7 @@ export class PhoneMirrorService {
       "base-uri 'none'",
     ].join('; ');
 
-    res.writeHead(refused ? 401 : 200, {
+    res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
       'Content-Security-Policy': csp,
@@ -1781,12 +1740,12 @@ export class PhoneMirrorService {
       res.end();
       return;
     }
-    res.end(refused ? PHONE_MIRROR_HTML.replace('<html lang="en">', '<html lang="en" data-link="refused">') : PHONE_MIRROR_HTML);
+    res.end(PHONE_MIRROR_HTML);
   }
 
   /**
-   * POST /image?t=<phone token>, body = the image bytes. Phone token only: the
-   * loopback extension token must never be able to put files on this machine.
+   * POST /image, body = image bytes. Anonymous LAN clients may upload.
+   * The browser extension credential cannot be used for phone uploads.
    * Answers 200 {ok:true} once the handler has taken the image, or an error
    * status the page shows as "Not delivered".
    */
@@ -1800,8 +1759,8 @@ export class PhoneMirrorService {
       reply(405, { ok: false, error: 'method' }, { Allow: 'POST' });
       return;
     }
-    if (!provided || !this.token || !timingSafeEqualStr(provided, this.token)) {
-      reply(401, { ok: false, error: 'token' });
+    if ((provided && timingSafeEqualStr(provided, this.extToken)) || !this.isSameOrigin(req)) {
+      reply(403, { ok: false, error: 'forbidden' });
       req.resume();
       return;
     }
@@ -1886,21 +1845,15 @@ export class PhoneMirrorService {
       return;
     }
 
-    // The WS carries both client roles: phones authenticate with the phone token,
-    // the extension with the loopback extension token. Accept EITHER (constant-time
-    // against both; role is later self-declared via the `hello` frame).
+    // Phones use the plain LAN URL. The extension still needs its separate,
+    // loopback-only credential; an anonymous phone cannot claim that role.
     const provided = url.searchParams.get('t') || '';
-    const wsTokenOk =
-      (this.token && timingSafeEqualStr(provided, this.token)) ||
-      (this.extToken && timingSafeEqualStr(provided, this.extToken));
-    if (!wsTokenOk) {
-      // Custom 4401 close code signals "auth failed" to the client (won't reconnect).
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    const viaExtToken = !!(this.extToken && timingSafeEqualStr(provided, this.extToken));
+    if (viaExtToken ? !isLoopbackAddress(req.socket.remoteAddress || '') : !this.isSameOrigin(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
     }
-
-    const viaExtToken = !!(this.extToken && timingSafeEqualStr(provided, this.extToken));
     const wss = this.wss;
     if (!wss) {
       socket.destroy();
@@ -2017,7 +1970,7 @@ export class PhoneMirrorService {
           c.message.trim().length > 0 &&
           c.message.length <= 2000
         ) {
-          validated = { type: 'chat', message: c.message.trim() };
+          validated = { type: 'chat', message: c.message.trim(), ...(c.captureScreen === true ? { captureScreen: true } : {}) };
         } else if (
           c.type === 'action' &&
           typeof c.action === 'string' &&
@@ -2026,6 +1979,8 @@ export class PhoneMirrorService {
           /^[a-zA-Z0-9:_-]{1,64}$/.test(c.action)
         ) {
           validated = { type: 'action', action: c.action };
+        } else if (c.type === 'cancel') {
+          validated = { type: 'cancel' };
         } else if (c.type === 'screenshot') {
           validated = { type: 'screenshot' };
         } else if (c.type === 'detach' && typeof c.id === 'string' && /^[0-9a-f-]{36}$/.test(c.id)) {
@@ -2311,7 +2266,7 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   if (ab.length !== bb.length) {
     // Still compare to keep timing roughly constant.
     const dummy = Buffer.alloc(ab.length || 1);
-    crypto.timingSafeEqual(ab.length ? ab : dummy, ab.length ? dummy : ab);
+    crypto.timingSafeEqual(ab.length ? ab : dummy, dummy);
     return false;
   }
   return crypto.timingSafeEqual(ab, bb);

@@ -60,7 +60,7 @@ test('all live routes and learned profiles keep a full 60 second wait', () => {
   }
   const profile = { stream: { count: 50, maxGapMs: 100 }, connect: { count: 50, maxMs: 100 } };
   for (const route of ['local', 'vision', 'server_cascade', 'user_endpoint', 'default_provider']) {
-    assert.equal(perf.streamIdleTimeoutMs(route, profile).valueMs, 60000);
+    assert.equal(perf.streamIdleTimeoutMs(route, profile).valueMs, 0);
   }
   assert.equal(perf.connectTimeoutMs(profile).valueMs, 60000);
 });
@@ -97,11 +97,11 @@ test('30 second mid-stream pause and an answer lasting over a minute complete', 
   assert.equal(await result, 'done'); assert.equal(text, 'start middle end');
 });
 
-test('60 seconds of silence after output preserves the partial answer', async (t) => {
+test('an explicitly requested stall guard can still protect background/test consumers', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   let text = '', outcome;
   const stream = (async function* () { yield 'partial'; await new Promise(() => {}); })();
-  const result = live.raceStreamWithDeadline({ stream, firstUsefulDeadlineMs: 60000, onToken: token => { text += token; }, isUsefulYet: () => !!text }).then(value => { outcome = value; });
+  const result = live.raceStreamWithDeadline({ stream, firstUsefulDeadlineMs: 60000, interTokenStallMs: 60000, onToken: token => { text += token; }, isUsefulYet: () => !!text }).then(value => { outcome = value; });
   await flush(); t.mock.timers.tick(59999); await flush(); assert.equal(outcome, undefined);
   t.mock.timers.tick(1); await result; assert.equal(outcome, 'stall_timeout'); assert.equal(text, 'partial');
 });
@@ -116,4 +116,32 @@ test('inner provider override cannot abort at 2.5 seconds before outer 60 second
   })();
   await flush(); t.mock.timers.tick(13000); await flush(); assert.equal(signal.aborted, false);
   t.mock.timers.tick(7000); await flush(); await result; assert.equal(output, 'delayed content');
+});
+
+for (const useFallbackEngine of [false, true]) {
+  test(`response reception survives a five-minute pause (fallback=${useFallbackEngine})`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    let text = '', ended = false;
+    const slow = async function* () { yield 'A'; await delay(300000); yield ' complete answer'; };
+    const stream = useFallbackEngine
+      ? runStreamingFallback([{ id: 'slow', name: 'Slow', priority: 0, isLocal: false, open: slow }], { ...config, maxAttempts: 1 }, new Map(), {}, undefined)
+      : slow();
+    const result = live.raceStreamWithDeadline({ stream, firstUsefulDeadlineMs: 60000, onToken: value => { text += value; }, isUsefulYet: () => false }).then(value => { ended = true; return value; });
+    await flush(); t.mock.timers.tick(299999); await flush();
+    assert.equal(ended, false); assert.equal(text, 'A');
+    t.mock.timers.tick(1); await flush(); assert.equal(await result, 'done');
+    assert.equal(text, 'A complete answer');
+  });
+}
+
+test('cancellation interrupts a pending post-response read without an idle deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  let cancelled = false;
+  const result = live.raceStreamWithDeadline({
+    stream: (async function* () { yield 'first'; await new Promise(() => {}); })(),
+    firstUsefulDeadlineMs: 60000, onToken() {}, isUsefulYet: () => true,
+    shouldAbort: () => cancelled,
+  });
+  await flush(); cancelled = true; t.mock.timers.tick(100); await flush();
+  assert.equal(await result, 'aborted');
 });

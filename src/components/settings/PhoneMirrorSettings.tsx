@@ -1006,7 +1006,7 @@ export const PhoneMirrorSettings: React.FC = () => {
       <div className="space-y-6 animated fadeIn" data-settings-stagger>
         {/* ── Phone Mirror: the local server, who can reach it, and pairing ── */}
         <section>
-          <SectionHeading title={t('Phone Mirror')} subtitle={t('Follow live answers on your phone.')} />
+          <SectionHeading title={t('Phone Mirror')} subtitle="启动时默认开启，可在局域网内查看回答、截图并提问。" />
 
           <SyncRow
             icon={<Smartphone size={20} />}
@@ -1061,99 +1061,28 @@ export const PhoneMirrorSettings: React.FC = () => {
               and fold away with it rather than popping the list. */}
           <Collapse open={shownRunning}>
             <SyncRow
-              icon={<QrCode size={20} />}
-              title={t('Pair a phone')}
-              descriptionKey={view.exposeOnLan ? 'pair-lan' : 'pair-local'}
-              description={
-                view.exposeOnLan
-                  ? t('Scan the code with your phone camera, or open the link on it.')
-                  : t('LAN is off. Turn it on, or open the link on this computer.')
-              }
-              control={revealButton(showPairing, () => setShowPairing((v) => !v), t('Show code'), t('Hide code'), PAIR_BTN_WIDTH)}
+              icon={<Wifi size={20} />}
+              title="局域网控制地址"
+              description="在手机或另一台电脑的浏览器中直接打开，无需扫码或登录。"
             >
-              <Collapse open={showPairing}>
-                <div className="pb-3">
-                  {/* Audio's card. The QR plaque stays white in both themes —
-                      scanners want dark modules on light. */}
-                  <div className="bg-bg-card rounded-xl border border-border-subtle p-4 flex flex-wrap items-start gap-4">
-                    <div className="relative shrink-0 w-[126px] h-[126px] rounded-lg bg-white p-1.5 border border-black/5 overflow-hidden">
-                      {/* A new token draws a new code: cross-fade it in place. */}
-                      <AnimatePresence initial={false}>
-                        {view.qrDataUrl ? (
-                          <motion.img
-                            key={view.qrDataUrl}
-                            src={view.qrDataUrl}
-                            alt={t('Pairing QR code')}
-                            className="absolute inset-1.5 block w-28 h-28"
-                            draggable={false}
-                            initial={{ opacity: 0, filter: 'blur(2px)' }}
-                            animate={{ opacity: 1, filter: 'blur(0px)' }}
-                            exit={{ opacity: 0, filter: 'blur(2px)' }}
-                            transition={{ duration: DUR_FAST, ease: 'easeInOut' }}
-                          />
-                        ) : (
-                          <motion.div
-                            key="pending"
-                            className="absolute inset-0 grid place-items-center bg-bg-input text-xs text-text-secondary"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: DUR_QUICK }}
-                          >
-                            {t('Generating…')}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                    <div className="flex-1 min-w-[200px] space-y-2">
-                      <label className="text-xs font-medium text-text-secondary uppercase tracking-wide block">
-                        {t('Pairing link')}
-                      </label>
-                      <div className="flex items-center gap-2">
-                        {secretField(view.primaryUrl)}
-                        {copyButton(view.primaryUrl, copied, copyLink, t('Copy pairing link'))}
-                      </div>
-                      {view.exposeOnLan && view.lanUrls.length > 1 && (
-                        // Fades up when LAN exposure turns on (.settings-swap-in).
-                        <div className="settings-swap-in">
-                          <button
-                            type="button"
-                            aria-expanded={showOtherAddrs}
-                            onClick={() => setShowOtherAddrs((v) => !v)}
-                            className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary transition-colors"
-                          >
-                            <DisclosureChevron open={showOtherAddrs} />
-                            {t('Other network addresses')} ({view.lanUrls.length - 1})
-                          </button>
-                          <Disclosure open={showOtherAddrs}>
-                            <ul className="mt-1.5 space-y-0.5 pl-5 font-mono text-xs text-text-secondary">
-                              {view.lanUrls.slice(1).map((u) => (
-                                <li key={u} className="truncate">
-                                  {u}
-                                </li>
-                              ))}
-                            </ul>
-                          </Disclosure>
-                        </div>
-                      )}
-                      <p className="flex items-start gap-2 pt-1 text-xs text-text-secondary">
-                        <Lock size={14} className="mt-px shrink-0" />
-                        <span>{t('The link carries a private token. Anyone who has it can open the mirror.')}</span>
-                      </p>
-                    </div>
-                  </div>
+              <div className="pb-3 space-y-2">
+                <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-bg-card p-3">
+                  <code className="flex-1 min-w-0 break-all select-text text-sm">{view.primaryUrl || '正在获取局域网地址…'}</code>
+                  {copyButton(view.primaryUrl, copied, copyLink, '复制地址')}
                 </div>
-              </Collapse>
+                {view.lanUrls.slice(1).map((url) => <div key={url} className="select-text text-xs text-text-secondary">{url}</div>)}
+                <p className="text-xs text-text-secondary">同一网络中能访问此地址的设备可查看回答、发送问题并触发电脑截图。可通过上方开关关闭。</p>
+              </div>
             </SyncRow>
 
             <SyncRow
               icon={<KeyRound size={20} />}
-              title={t('Reset pairing')}
+              title="重置浏览器扩展配对"
               descriptionKey={confirmReset ? 'confirm' : 'idle'}
               description={
                 confirmReset
-                  ? t('Old links stop working. Re-pair the extension.')
-                  : t('Disconnects all phones and the extension. Use if a link leaked.')
+                  ? '扩展需要重新配对，局域网地址不变。'
+                  : '重置扩展凭据；局域网网页仍可直接访问。'
               }
               control={
                 <Presence kind="control" id={confirmReset ? 'confirm' : 'idle'}>

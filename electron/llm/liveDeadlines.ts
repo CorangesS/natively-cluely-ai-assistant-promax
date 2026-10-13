@@ -1,8 +1,8 @@
-import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from './requestTimeout';
 // electron/llm/liveDeadlines.ts
 //
-// Interactive requests allow 60 seconds for first useful output or a later
-// silent gap. Continuous output can run longer than one minute.
+// Interactive requests allow 60 seconds for first output. After output starts,
+// receive until completion or cancellation, without an application idle timer.
 //
 // These budgets are shared by IntelligenceEngine (WTA),
 // ipcHandlers (manual chat), and the benchmark runners so the product and its
@@ -258,7 +258,7 @@ export function regenerationBudgetMs(opts: { routeBudgetMs: number; elapsedMs: n
   return Math.round(budget);
 }
 
-export const LIVE_INTER_TOKEN_STALL_MS = LLM_REQUEST_TIMEOUT_MS;
+export const LIVE_INTER_TOKEN_STALL_MS = LLM_STREAM_IDLE_TIMEOUT_MS;
 /** Benchmark per-question hard timeout — the outer wrapper that must never be exceeded. */
 export const BENCHMARK_PER_QUESTION_HARD_TIMEOUT_MS = 30000;
 
@@ -541,16 +541,10 @@ export interface StreamObservation {
 }
 
 /**
- * Drive an async stream with the live deadline contract. Races each next()
- * against the active budget:
- *   • before the first useful token — the first-useful deadline (abort→fallback)
- *   • after — an inter-token stall guard (abort only on a real mid-stream stall)
- *
- * Calls `onToken(value)` for each token. `markUseful(accumulated)` returns true
- * once the accumulated output is user-useful (so the deadline switches to the
- * stall guard). Returns why the loop ended. ALWAYS closes the iterator.
- *
- * `isSpeculative` (prefetch) disables the deadline (no user waiting).
+ * Wait for first nonempty output, then receive until EOF or cancellation.
+ * An explicit positive interTokenStallMs opts a non-interactive caller into a
+ * stall deadline; the interactive default is zero (disabled). Speculative
+ * streams have no first-response deadline either. Always closes the iterator.
  */
 export async function raceStreamWithDeadline(opts: {
   stream: AsyncGenerator<string> | AsyncIterable<string>;
@@ -558,7 +552,7 @@ export async function raceStreamWithDeadline(opts: {
   interTokenStallMs?: number;
   isSpeculative?: boolean;
   onToken: (value: string) => void | Promise<void>;
-  /** Return true once `accumulated` is user-useful. */
+  /** Legacy callback retained for callers; usefulness no longer gates reception. */
   isUsefulYet: () => boolean;
   /** Called once the deadline fires before any useful token (for telemetry). */
   onFirstUsefulTimeout?: () => void;
@@ -592,13 +586,12 @@ export async function raceStreamWithDeadline(opts: {
 }): Promise<'done' | 'first_useful_timeout' | 'stall_timeout' | 'aborted'> {
   const {
     stream, firstUsefulDeadlineMs: fuMs, interTokenStallMs = LIVE_INTER_TOKEN_STALL_MS,
-    isSpeculative = false, onToken, isUsefulYet, onFirstUsefulTimeout, onStallTimeout, shouldAbort, onCleanup,
+    isSpeculative = false, onToken, onFirstUsefulTimeout, onStallTimeout, shouldAbort, onCleanup,
     observe,
   } = opts;
   const iterator = (stream as AsyncIterable<string>)[Symbol.asyncIterator]();
   const start = Date.now();
   let lastTokenAt = start;
-  let useful = false;
   // Instrumentation state. `firstTokenAt` is separate from `lastTokenAt`
   // because the first interval is TTFT (prefill) and every later one is a
   // generation gap; averaging them together is what makes a stall guard sized
@@ -641,41 +634,45 @@ export async function raceStreamWithDeadline(opts: {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       if (shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
-      let res: IteratorResult<string> | typeof DEADLINE;
-      if (!isSpeculative) {
-        if (!useful) useful = isUsefulYet();
-        const remaining = !useful
-          ? Math.max(50, fuMs - (Date.now() - start))
-          : Math.max(50, interTokenStallMs - (Date.now() - lastTokenAt));
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const deadline = new Promise<typeof DEADLINE>((r) => { timer = setTimeout(() => r(DEADLINE), remaining); });
-        // DEFUSE the racing next() promise: if the deadline wins, this promise is
-        // still pending and unobserved — when the hung provider's request later
-        // rejects (timeout / 429 / socket reset) it would surface as an
-        // unhandledRejection (fatal in Electron main). Attach a no-op catch so the
-        // loser can never be an unhandled rejection (code-review 2026-06-05, HIGH).
+      // The first-response deadline ends with the first nonempty chunk, even
+      // if a caller's usefulness threshold has not yet been met.
+      const started = firstTokenAt !== null;
+      const remaining = isSpeculative ? 0 : !started
+        ? Math.max(1, fuMs - (Date.now() - start))
+        : interTokenStallMs > 0 ? Math.max(1, interTokenStallMs - (Date.now() - lastTokenAt)) : 0;
+      const ABORTED = Symbol('aborted');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancelPoll: ReturnType<typeof setInterval> | undefined;
+      let res: IteratorResult<string> | typeof DEADLINE | typeof ABORTED;
+      try {
         const nextP = iterator.next();
-        nextP.catch(() => { /* loser of the race — defused */ });
-        res = await Promise.race([nextP, deadline]);
+        nextP.catch(() => {}); // a late rejection after cancellation is observed
+        const ending = new Promise<typeof DEADLINE | typeof ABORTED>((resolve, reject) => {
+          if (remaining > 0) timer = setTimeout(() => resolve(DEADLINE), remaining);
+          // Poll ownership, not response duration: replacing or stopping an
+          // answer must still release a provider that never yields again.
+          if (shouldAbort) cancelPoll = setInterval(() => {
+            try { if (shouldAbort()) resolve(ABORTED); } catch (error) { reject(error); }
+          }, 100);
+        });
+        res = await Promise.race([nextP, ending]);
+      } finally {
         if (timer) clearTimeout(timer);
-        // Ownership can change while next() is pending. Never deliver an old
-        // request's late token or timeout after a replacement request starts.
-        if (shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
-        if (res === DEADLINE) {
-          if (!useful) {
-            cleanup('first_useful_timeout');
-            onFirstUsefulTimeout?.();
-            return 'first_useful_timeout';
-          }
-          cleanup('stall_timeout');
-          onStallTimeout?.();
-          return 'stall_timeout';
+        if (cancelPoll) clearInterval(cancelPoll);
+      }
+      if (res === ABORTED || shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
+      if (res === DEADLINE) {
+        if (!started) {
+          cleanup('first_useful_timeout');
+          onFirstUsefulTimeout?.();
+          return 'first_useful_timeout';
         }
-      } else {
-        res = await iterator.next();
-        if (shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
+        cleanup('stall_timeout');
+        onStallTimeout?.();
+        return 'stall_timeout';
       }
       if (res.done) { cleanup('done'); return 'done'; }
+      if (typeof res.value !== 'string' || res.value.length === 0) continue;
       const now = Date.now();
       if (firstTokenAt == null) firstTokenAt = now;
       else interChunkGapsMs.push(now - lastTokenAt);
@@ -683,7 +680,6 @@ export async function raceStreamWithDeadline(opts: {
       outputChars += typeof res.value === 'string' ? res.value.length : 0;
       lastTokenAt = now;
       await onToken(res.value);
-      if (!useful) useful = isUsefulYet();
     }
   } catch (e) {
     cleanup('error', e);

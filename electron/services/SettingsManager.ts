@@ -366,6 +366,10 @@ export class SettingsManager {
     }
 
     public get<K extends keyof AppSettings>(key: K): AppSettings[K] {
+        // LAN control starts automatically unless the user explicitly disables it.
+        if ((key === 'phoneMirrorEnabled' || key === 'phoneMirrorExposeOnLan') && this.settings[key] === undefined) {
+            return true as AppSettings[K];
+        }
         return this.settings[key];
     }
 

@@ -629,7 +629,7 @@ export async function* runStreamingFallback(
             const nextChunk = it.next();
             nextChunk.catch(() => { });
             const stall = new Promise<never>((_, rej) => {
-              stallTimer = setTimeout(() => { try { ctrl.abort(); } catch { } rej(new Error('interchunk-stall')); }, cfg.interChunkTimeoutMs);
+              if (cfg.interChunkTimeoutMs > 0) stallTimer = setTimeout(() => { try { ctrl.abort(); } catch { } rej(new Error('interchunk-stall')); }, cfg.interChunkTimeoutMs);
             });
             next = await Promise.race([nextChunk, stall]);
           } catch (drainErr: any) {

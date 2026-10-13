@@ -13148,7 +13148,7 @@ let isMultimodal = !!(imagePaths?.length);
           // system-design answer. Ollama stops on EOS by default; the existing
           // inter-token stall guard (LIVE_INTER_TOKEN_STALL_MS = 8s in
           // liveDeadlines.ts) still aborts a genuinely hung stream, and the
-          // 120s hard ceiling on the fetch aborts a runaway generation loop.
+          // caller retains explicit cancellation for the stream.
           //
           // Escape hatch: set OLLAMA_MAX_OUTPUT_TOKENS in the environment to
           // re-enable a client-side cap (useful for power users with custom
@@ -13159,14 +13159,9 @@ let isMultimodal = !!(imagePaths?.length);
         }
       };
       if (this.isThinkingModel(ollamaModel)) streamBody.think = false;
-      // Combine the 120s hard ceiling with the caller's user-cancel signal.
-      // AbortSignal.any() returns a signal aborted as soon as ANY of its
-      // inputs abort, so the caller can cancel an Ollama generation that's
-      // taking too long (or just navigate away mid-stream) without waiting
-      // for the 2-minute timeout.
-      const ollamaSignal = abortSignal
-        ? AbortSignal.any([AbortSignal.timeout(120_000), abortSignal])
-        : AbortSignal.timeout(120_000);
+      // The caller owns first-response waiting and cancellation. Do not attach
+      // a lifetime timer to the response body: long local answers must reach EOF.
+      const ollamaSignal = abortSignal;
       const serializedBody = JSON.stringify(streamBody);
       require('./llm/providerPayloadCapture').captureProviderPayload({
         provider: 'ollama',

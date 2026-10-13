@@ -17,8 +17,7 @@
 // mic; action placeholders replaced in place by the labelled answer; typed
 // question → echo reconciled → streamed answer; reconnect mid-stream without
 // doubled text; the transcript island's tap / flick / drag / tap-outside; the
-// split column; screen-capture confirmation; expired links (4401 close and a
-// refused reconnect); text contrast; and no page errors.
+// split column; screen-capture confirmation; anonymous links and reconnection after an extension credential reset; text contrast; and no page errors.
 //
 // Not covered (needs a physical device): the real on-screen keyboard and
 // visualViewport, real safe-area insets (simulated here), backdrop blur (not
@@ -192,7 +191,7 @@ async function openPage(browser, dev, scheme) {
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   // WebKit logs unknown viewport keys as errors; interactive-widget is for Chrome on Android.
   page.on('console', (m) => { if (m.type() === 'error' && !/interactive-widget/.test(m.text())) errors.push('console: ' + m.text()); });
-  await page.goto(`http://127.0.0.1:${info.port}/?t=${encodeURIComponent(info.token)}`);
+  await page.goto(`http://127.0.0.1:${info.port}/`);
   if (dev.notch) {
     const vars = NOTCH[dev.notch];
     await page.addStyleTag({ content: ':root{' + Object.entries(vars).map(([k, v]) => `${k}:${v} !important`).join(';') + '}' });
@@ -496,24 +495,20 @@ async function scenario(dev, scheme) {
 async function tokenScenarios() {
   const dev = DEVICES[1];
   const browser = await launch(dev.engine);
-  // Rotation closes sockets with 4401 → lock screen.
-  let { ctx, page } = await openPage(browser, dev, 'dark');
-  info = await svc.rotateToken();
-  await page.waitForFunction(() => document.getElementById('app').dataset.conn === 'rejected', null, { timeout: 3000 }).catch(() => {});
-  check('token', 'rotation shows the expired-link screen', await page.$eval('#lock', (n) => !n.hidden));
-  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'token-expired.png') });
-  await ctx.close();
-  // A socket drop, then a rotation while the phone is away: the reconnect's
-  // upgrade is refused with HTTP 401 (close 1006), found by the HEAD probe.
-  ({ ctx, page } = await openPage(browser, dev, 'dark'));
-  const oldToken = info.token;
-  svc.disconnectAllClients(1001, 'drop');
-  info = await svc.rotateToken();
-  await page.waitForFunction(() => document.getElementById('app').dataset.conn === 'rejected', null, { timeout: 12000 }).catch(() => {});
-  check('token', 'refused reconnect (1006) detected as expired', (await page.getAttribute('#app', 'data-conn')) === 'rejected', await page.getAttribute('#app', 'data-conn'));
-  check('token', 'page used the old token', oldToken !== info.token);
-  await ctx.close();
-  await browser.close();
+  const { ctx, page } = await openPage(browser, dev, 'dark');
+  try {
+    const oldUrl = info.loopbackUrl;
+    const oldExtensionToken = info.extToken;
+    info = await svc.rotateToken();
+    check('token', 'extension credential changes', oldExtensionToken !== info.extToken);
+    check('token', 'phone address remains unchanged', oldUrl === info.loopbackUrl);
+    check('token', 'phone stays connected without authentication', (await page.getAttribute('#app', 'data-conn')) === 'live');
+    check('token', 'no authentication screen', await page.$eval('#lock', n => n.hidden));
+    svc.disconnectAllClients(1001, 'drop');
+    await page.waitForFunction(() => document.getElementById('app').dataset.conn === 'reconnecting');
+    await page.waitForFunction(() => document.getElementById('app').dataset.conn === 'live', null, { timeout: 12000 });
+    check('token', 'reconnects without pairing', (await page.getAttribute('#app', 'data-conn')) === 'live');
+  } finally { await ctx.close(); await browser.close(); }
 }
 
 // The two slow paths, once, on one device (~70 s): a question the desktop never
@@ -894,35 +889,24 @@ async function retryScenario(dev) {
   }
 }
 
-// A link without a valid token: the desktop serves the page marked refused
-// and it opens on its own lock screen (was a bare line of text).
+// Plain addresses and old bookmarks both connect without pairing.
 async function refusedLinkScenario(dev, scheme) {
   const browser = await launch(dev.engine);
-  const tag = `${dev.name}/${scheme}/refused`;
+  const tag = `${dev.name}/${scheme}/anonymous`;
   const ctx = await browser.newContext({ ...dev.desc, colorScheme: scheme });
   const page = await ctx.newPage();
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('pageerror', e => errors.push(e.message));
   try {
-    for (const [q, title, pill, again] of [
-      ['', 'This page needs a pairing link', 'Not paired', false],
-      ['?t=stale-link', 'This pairing link has expired', 'Link expired', true],
-    ]) {
-      const res = await page.goto(`http://127.0.0.1:${info.port}/${q}`);
-      await sleep(500);
-      const st = await page.evaluate(() => {
-        const lock = document.getElementById('lock');
-        const r = lock.getBoundingClientRect();
-        return { shown: !lock.hidden, title: document.getElementById('lockTitle').textContent, pill: document.getElementById('connText').textContent, again: !document.getElementById('lockAgain').hidden, covers: r.width >= innerWidth - 1 && r.height >= innerHeight - 1, conn: document.getElementById('app').dataset.conn };
-      });
-      check(tag, `${q ? 'stale token' : 'no token'}: the lock screen, not plain text`, res.status() === 401 && st.shown && st.covers && st.title === title && st.pill === pill && st.again === again, JSON.stringify({ status: res.status(), ...st }));
-      if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${dev.name}-${scheme}-refused-${q ? 'stale' : 'none'}.png`) });
+    for (const q of ['', '?t=stale-link']) {
+      const response = await page.goto(`http://127.0.0.1:${info.port}/${q}`);
+      await page.waitForFunction(() => document.getElementById('app').dataset.conn === 'live');
+      check(tag, 'plain and legacy URLs return 200', response.status() === 200);
+      check(tag, 'no authentication screen', await page.$eval('#lock', n => n.hidden));
+      check(tag, 'composer available', await page.$eval('#input', n => !n.disabled));
     }
     check(tag, 'no page errors', errors.length === 0, errors.join(' | '));
-  } finally {
-    await ctx.close();
-    await browser.close();
-  }
+  } finally { await ctx.close(); await browser.close(); }
 }
 
 // Markdown as the overlay renders it (gist chip, tables, math, hot words,

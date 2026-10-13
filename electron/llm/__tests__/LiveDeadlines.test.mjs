@@ -63,13 +63,13 @@ describe('Issue 1: live-deadline harness aborts stalled providers', () => {
     assert.ok(elapsed < 1500, `must not wait 20s, took ${elapsed}ms`);
   });
 
-  test('provider yields scaffold-only (no useful content) → first_useful_timeout', async () => {
+  test('a nonempty chunk ends the first-response wait even before it is useful', async () => {
     // Tokens arrive but isUsefulYet stays false (only whitespace/labels).
     const { result, elapsed } = await drive(
       fakeStream([{ delayMs: 30, value: '   ' }, { delayMs: 30, value: '## ' }], 3000),
       { fuMs: 300, isUsefulYet: () => false },
     );
-    assert.equal(result, 'first_useful_timeout');
+    assert.equal(result, 'stall_timeout');
     assert.ok(elapsed < 2000, `aborted near budget, took ${elapsed}ms`);
   });
 
@@ -171,7 +171,7 @@ describe('Issue 1: live-deadline harness aborts stalled providers', () => {
     const onUnhandled = (e) => { unhandled = e; };
     process.on('unhandledRejection', onUnhandled);
     try {
-      async function* hangThenReject() { yield '  '; await sleep(200); throw new Error('provider 429 after deadline'); }
+      async function* hangThenReject() { await sleep(200); throw new Error('provider 429 after deadline'); }
       const { result, elapsed } = await drive(hangThenReject(), { fuMs: 80, isUsefulYet: () => false });
       assert.equal(result, 'first_useful_timeout');
       assert.ok(elapsed < 1000, `aborted near budget, took ${elapsed}ms`);

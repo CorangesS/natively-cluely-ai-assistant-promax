@@ -1,4 +1,4 @@
-import { LLM_REQUEST_TIMEOUT_MS } from '../llm/requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from '../llm/requestTimeout';
 import { DirectAssistError, describeDirectAssistFailure, normalizeDirectAssistError } from './errors';
 import {
   DEFAULT_DIRECT_ASSIST_FALLBACK_CONFIG,
@@ -24,7 +24,7 @@ import type {
   DirectAssistTransport,
 } from './types';
 
-export const DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+export const DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS = LLM_STREAM_IDLE_TIMEOUT_MS;
 
 export interface DirectAssistTimerScheduler {
   set(callback: () => void, delayMs: number): unknown;
@@ -113,7 +113,7 @@ export class DirectAssistService {
     options: DirectAssistServiceOptions = {},
   ) {
     const configuredTimeout = options.streamIdleTimeoutMs;
-    this.streamIdleTimeoutMs = Number.isFinite(configuredTimeout) && Number(configuredTimeout) > 0
+    this.streamIdleTimeoutMs = Number.isFinite(configuredTimeout) && Number(configuredTimeout) >= 0
       ? Math.floor(Number(configuredTimeout))
       : DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS;
     this.timerScheduler = options.timerScheduler ?? SYSTEM_TIMER_SCHEDULER;
@@ -191,6 +191,11 @@ export class DirectAssistService {
       let idlePromise: Promise<never>;
       const armIdleWatchdog = () => {
         if (idleTimer !== undefined) this.timerScheduler.clear(idleTimer);
+        idleTimer = undefined;
+        const waitMs = sequence === 0
+          ? (this.streamIdleTimeoutMs || LLM_REQUEST_TIMEOUT_MS)
+          : this.streamIdleTimeoutMs;
+        if (waitMs === 0) { idlePromise = new Promise(() => {}); return; }
         idlePromise = new Promise<never>((_resolve, reject) => {
           idleTimer = this.timerScheduler.set(() => {
             idleTimedOut = true;
@@ -199,7 +204,7 @@ export class DirectAssistService {
             // release their socket/process immediately.
             reject(idleError);
             if (!dispatchController?.signal.aborted) dispatchController?.abort(idleError);
-          }, this.streamIdleTimeoutMs);
+          }, waitMs);
         });
         // DEFUSE. A re-arm now happens mid-await (on rung open), so the read
         // loop's in-flight race may still be holding the PREVIOUS promise when

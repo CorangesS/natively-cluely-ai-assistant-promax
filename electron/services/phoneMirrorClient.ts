@@ -1381,7 +1381,9 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
             </div>
           </div>
           <div class="chips" id="chips" role="toolbar" aria-label="Ask your desktop">
-            <button class="chip is-primary" type="button" data-action="whatToAnswer" data-needs-meeting>What to Say</button>
+            <button class="chip is-primary" type="button" id="captureSendBtn">截图并发送</button>
+            <button class="chip" type="button" id="stopPhoneBtn">停止回答</button>
+            <button class="chip" type="button" data-action="whatToAnswer" data-needs-meeting>What to Say</button>
             <button class="chip" type="button" data-action="answer">Answer</button>
             <button class="chip" type="button" data-action="followUp" data-needs-meeting>Follow Up</button>
             <button class="chip" type="button" data-action="clarify" data-needs-meeting>Clarify</button>
@@ -3089,8 +3091,6 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         else if (splitQuery.addListener) splitQuery.addListener(onLayoutChange);
 
         // ───── Connection ─────────────────────────────────────────────────
-        var params = new URLSearchParams(window.location.search);
-        var token = params.get('t') || '';
         var socket = null;
         var reconnectTimer = 0;
         var reconnectDelay = 800;
@@ -3193,7 +3193,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           clearTimeout(reconnectTimer);
           if (conn === 'rejected') return;
           var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          var url = proto + '//' + window.location.host + '/ws?t=' + encodeURIComponent(token);
+          var url = proto + '//' + window.location.host + '/ws';
           var previous = socket;
           try { socket = new WebSocket(url); } catch (_) { scheduleReconnect(); return; }
           // Only one socket at a time: a second one doubles every frame (two
@@ -3259,13 +3259,15 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           e.preventDefault();
           submit();
         });
-        sendBtn.addEventListener('click', submit);
-        function submit() {
-          var text = input.value.trim();
+        sendBtn.addEventListener('click', function () { submit(false); });
+        byId('captureSendBtn').addEventListener('click', function () { submit(true); });
+        byId('stopPhoneBtn').addEventListener('click', function () { sendCommand({ type: 'cancel' }); });
+        function submit(captureScreen) {
+          var text = input.value.trim() || (captureScreen === true ? '请根据当前电脑屏幕截图分析并回答其中的问题。' : '');
           if (!text) return;
           if (!isLive()) { showToast('Not connected to your desktop', true); return; }
-          var entry = { key: 'u:local:' + (++localSeq), t: Date.now(), kind: 'user', content: text, state: 'sending', local: true };
-          if (!sendCommand({ type: 'chat', message: text })) { showToast('Not connected to your desktop', true); return; }
+          var entry = { key: 'u:local:' + (++localSeq), t: Date.now(), kind: 'user', content: text, state: 'sending', captureScreen: captureScreen === true, local: true };
+          if (!sendCommand({ type: 'chat', message: text, captureScreen: captureScreen === true })) { showToast('Not connected to your desktop', true); return; }
           input.value = '';
           autoGrow();
           paintControls();
@@ -3286,7 +3288,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           }, DELIVERY_TIMEOUT_MS);
         }
         function retrySend(entry) {
-          if (!sendCommand({ type: 'chat', message: entry.content })) { showToast('Not connected to your desktop', true); return; }
+          if (!sendCommand({ type: 'chat', message: entry.content, captureScreen: entry.captureScreen === true })) { showToast('Not connected to your desktop', true); return; }
           entry.state = 'sending';
           paintUserState(entry);
           armDelivery(entry);
@@ -3313,7 +3315,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
               chip.classList.remove('is-shaking');
               void chip.offsetWidth;   // replay on a second tap
               chip.classList.add('is-shaking');
-              showToast('Start a meeting on your Mac first');
+              showToast('Start a meeting on your computer first');
               return;
             }
             if (!sendCommand({ type: 'action', action: action })) { showToast('Not connected to your desktop', true); return; }
@@ -3417,7 +3419,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           paintImageState(entry);
           var controller = typeof AbortController === 'function' ? new AbortController() : null;
           var timer = setTimeout(function () { if (controller) controller.abort(); }, UPLOAD_TIMEOUT_MS);
-          return fetch('/image?t=' + encodeURIComponent(token), {
+          return fetch('/image', {
             method: 'POST',
             headers: { 'Content-Type': 'image/jpeg' },
             body: entry.blob,
@@ -3563,15 +3565,6 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         updateEmpty();
         paintTranscriptState();
         paintControls();
-        if (!token) {
-          setConn('missing');
-          return;
-        }
-        // Served as refused: the link's token is not (or no longer) valid.
-        if (document.documentElement.dataset.link === 'refused') {
-          setConn('rejected');
-          return;
-        }
         requestWakeLock();
         connect();
       })();

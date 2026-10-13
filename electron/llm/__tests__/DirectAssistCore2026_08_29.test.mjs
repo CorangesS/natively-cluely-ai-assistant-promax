@@ -2216,3 +2216,21 @@ test('a denied screenshots scope drops carried images instead of failing the tur
   assert.deepEqual(seen.imagePaths, [], 'the carried image must be dropped, not sent');
   assert.deepEqual(seen.chunks, ['ok'], 'and the turn must still answer — drop, never fail');
 });
+
+
+test('default Direct Assist removes its receive timer after the first delta and still cancels', async () => {
+  const { DirectAssistService } = await loadDirectAssist();
+  const fakeTimer = createFakeTimerScheduler();
+  const controller = new AbortController();
+  const service = new DirectAssistService({
+    streamDirectAssist: async function* () { yield 'first'; await new Promise(() => {}); },
+  }, { timerScheduler: fakeTimer.scheduler });
+  const stream = service.stream(baseInput(), controller.signal);
+  assert.equal((await stream.next()).value.type, 'start');
+  assert.equal((await stream.next()).value.text, 'first');
+  assert.equal(fakeTimer.active().length, 0, 'no receive timer remains');
+  const pending = stream.next(); controller.abort();
+  const terminal = await pending;
+  assert.equal(terminal.value.type, 'cancel');
+  assert.equal((await stream.next()).done, true);
+});

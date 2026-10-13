@@ -1,4 +1,4 @@
-import { LLM_REQUEST_TIMEOUT_MS } from '../requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from '../requestTimeout';
 // electron/llm/performance/priors.ts
 //
 // Shipped priors — what Natively expects from a provider it has never measured.
@@ -59,7 +59,7 @@ export const ROUTE_STREAM_IDLE_PRIOR_MS: Record<RouteKind, number> = {
 };
 
 /** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
-export const STREAM_IDLE_MIN_MS = LLM_REQUEST_TIMEOUT_MS;
+export const STREAM_IDLE_MIN_MS = LLM_STREAM_IDLE_TIMEOUT_MS;
 export const STREAM_IDLE_MAX_MS = LIVE_INTER_TOKEN_STALL_MS;
 
 /**

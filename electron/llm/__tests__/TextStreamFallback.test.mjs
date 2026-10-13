@@ -116,11 +116,10 @@ function fastHooks(extra = {}) {
 describe('DEFAULT_TEXT_FALLBACK_CONFIG', () => {
   test('allows 60 seconds for the first text token', () => {
     assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs, 60_000);
-    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs, DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs,
-      'first-token and mid-stream waits both allow a full minute');
+    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs, 0, 'no application timer after output starts');
   });
   test('keeps a generous inter-chunk budget so long answers are not cut off', () => {
-    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs, 60_000);
+    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs, 0);
   });
   test('orderTextByHealth is exported and orders fastest-first', () => {
     const health = new Map([

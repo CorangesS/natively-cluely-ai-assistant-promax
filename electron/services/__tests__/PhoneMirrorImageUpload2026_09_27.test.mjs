@@ -139,9 +139,9 @@ describe('phone image upload (POST /image)', () => {
     assert.equal(received.length, 0);
   });
 
-  test('no token, a wrong token, or the extension token → 401', async () => {
-    assert.equal((await post(JPEG, { token: null })).status, 401);
-    assert.equal((await post(JPEG, { token: 'x'.repeat(32) })).status, 401);
+  test('anonymous uploads work, but the extension credential cannot upload', async () => {
+    assert.equal((await post(JPEG, { token: null })).status, 200);
+    assert.equal((await post(JPEG, { token: 'x'.repeat(32) })).status, 200);
     svc.armExtensionPairing();
     const pair = await fetch(`http://127.0.0.1:${info.port}/pair`, {
       method: 'POST',
@@ -151,8 +151,8 @@ describe('phone image upload (POST /image)', () => {
     assert.equal(pair.status, 200);
     const extToken = (await pair.json()).token;
     assert.ok(extToken && extToken !== info.token);
-    assert.equal((await post(JPEG, { token: extToken })).status, 401);
-    assert.equal(received.length, 0);
+    assert.equal((await post(JPEG, { token: extToken })).status, 403);
+    assert.equal(received.length, 2);
   });
 
   test('over the size cap, declared up front → 413 without reading it', async () => {

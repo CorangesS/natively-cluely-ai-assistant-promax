@@ -75,6 +75,7 @@ export function streamIdleTimeoutMs(
   profile: ProviderPerformanceProfile | null,
 ): DeadlineDecision {
   const prior = ROUTE_STREAM_IDLE_PRIOR_MS[route] ?? LIVE_INTER_TOKEN_STALL_MS;
+  if (prior === 0) return { valueMs: 0, source: 'shipped_prior', rawMs: null, sampleCount: 0, confidence: confidenceFor(0) };
   const gaps = profile?.stream;
   const confidence = confidenceFor(gaps?.count ?? 0);
 

@@ -1,4 +1,4 @@
-import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from './requestTimeout';
 // electron/llm/textStreamFallback.ts
 //
 // Text-streaming provider fallback — the text-path twin of the vision fallback.
@@ -37,17 +37,7 @@ export type TextStreamProvider = VisionStreamProvider;
 export type TextHealthEntry = VisionHealthEntry;
 export type TextFallbackHooks = VisionFallbackHooks;
 
-/**
- * Text-tuned fallback config. Text first-token is far faster than vision
- * prefill, so the TTFT budget is much tighter — a healthy text provider emits
- * its first token well under 2.5s; beyond that we'd rather race the next
- * provider than keep the user waiting. interChunkTimeout stays generous so a
- * long, correct answer mid-stream is never cut off.
- *
- *   ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS — allow 60s for the first token
- *   interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS — allow 60s of silence after output
- *   maxAttempts: 2         — per provider (tier retry); the chain has many providers
- */
+/** Wait up to 60 seconds for first output, then receive without an idle timer. */
 export const DEFAULT_TEXT_FALLBACK_CONFIG: VisionFallbackConfig = {
   // Task 1 (2026-09-08) generalised the shared engine's log prefix out of a
   // hardcoded "[Vision]" into cfg.logPrefix. This module already ran text
@@ -59,7 +49,7 @@ export const DEFAULT_TEXT_FALLBACK_CONFIG: VisionFallbackConfig = {
   logPrefix: 'Vision',
   maxAttempts: 2,
   ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
-  interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
+  interChunkTimeoutMs: LLM_STREAM_IDLE_TIMEOUT_MS,
   authCooldownMs: 300_000,
   transientCooldownMs: 30_000,
   incompatibleCooldownMs: 600_000,

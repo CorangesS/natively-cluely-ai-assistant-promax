@@ -1,3 +1,4 @@
+import { preparePhoneChatImages } from './services/phoneChatCapture';
 // ipcHandlers.ts
 
 import * as crypto from 'crypto';
@@ -1721,6 +1722,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // surface. Phone supersession compares against this dedicated latest-phone marker instead,
   // so only a NEWER PHONE message supersedes a phone stream (desktop streams stay per-sender).
   let _phoneChatLatestId = 0;
+  let _activePhoneChat: { streamId: number; controller: AbortController } | null = null;
   // Per-process diversity guard for manual chat (manual regression 2026-06-12):
   // last-20 answer fingerprints; repeated answers across DIFFERENT questions are
   // compressed to speakable prose. Survives across questions within the app run
@@ -19171,45 +19173,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     return PhoneMirrorService.getInstance().snapshot();
   });
 
-  // The one "Allow LAN access?" consent, for every handler that can bind
-  // 0.0.0.0. Binding there lets any device on the Wi-Fi connect with the
-  // pairing token, so it is a deliberate security widening, confirmed in main
-  // (a renderer must not approve it). While Undetectable is on the system
-  // dialog would show in a screen share, so the bind is refused instead.
-  const confirmLanBind = (service: PhoneMirrorService): 'allowed' | 'declined' | 'refused' => {
-    if (nativePromptsBlocked(() => appState.getUndetectable())) return 'refused';
-    const win = appState.getMainWindow() ?? undefined;
-    const lanBindDialogOptions: Electron.MessageBoxSyncOptions = {
-      type: 'warning',
-      message: 'Allow LAN access?',
-      detail:
-        'This will bind Natively to 0.0.0.0:4123 so any device on this Wi-Fi network can connect with the pairing token. Continue?',
-      buttons: ['Cancel', 'Allow LAN access'],
-      defaultId: 0,
-      cancelId: 0,
-    };
-    // Electron types (options) and (parent, options) but not (undefined, options);
-    // picking the overload by parent presence leaves the runtime call unchanged.
-    const response = win
-      ? dialog.showMessageBoxSync(win, lanBindDialogOptions)
-      : dialog.showMessageBoxSync(lanBindDialogOptions);
-    if (response !== 1) return 'declined';
-    service.markLanBindDialogShown();
-    return 'allowed';
-  };
-
   safeHandle('phone-mirror:enable', async (_, exposeOnLan?: boolean) => {
-    // Enabling with LAN on binds 0.0.0.0 just as the LAN switch does, so it
-    // needs the same consent. It used to skip it entirely.
     const service = PhoneMirrorService.getInstance();
-    if (service.needsLanBindConfirmation(!!exposeOnLan)) {
-      const consent = confirmLanBind(service);
-      if (consent === 'refused') return { ok: false, declined: true, error: UNDETECTABLE_REFUSAL_MESSAGES.lanAccess };
-      if (consent === 'declined') return { ok: false, declined: true };
-    }
     try {
       return await service.start({
-        exposeOnLan: !!exposeOnLan,
+        exposeOnLan: exposeOnLan ?? true,
         persist: true,
       });
     } catch (e: any) {
@@ -19228,20 +19196,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       return await service.setExposeOnLan(!!exposeOnLan);
     } catch (e: any) {
-      // LAN exposure is a deliberate security widening — bound 0.0.0.0 lets any
-      // device on the Wi-Fi connect with the pairing token. Surface a modal
-      // confirmation; only flip the toggle if the user picks "Allow".
-      if (e?.name === 'LANBindConfirmationRequired') {
-        const consent = confirmLanBind(service);
-        if (consent === 'refused') return { ok: false, declined: true, error: UNDETECTABLE_REFUSAL_MESSAGES.lanAccess };
-        if (consent === 'declined') return { ok: false, declined: true };
-        try {
-          return await service.setExposeOnLan(!!exposeOnLan);
-        } catch (e2: any) {
-          console.error('[IPC] phone-mirror:set-lan retry error:', e2);
-          return { error: e2?.message || 'failed to update lan setting' };
-        }
-      }
       console.error('[IPC] phone-mirror:set-lan error:', e);
       return { error: e?.message || 'failed to update lan setting' };
     }
@@ -19487,7 +19441,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   PhoneMirrorService.getInstance().onPhoneCommand(async (cmd) => {
     const win = appState.getMainWindow();
 
-    if (cmd.type === 'action') {
+    if (cmd.type === 'cancel') {
+      ++_phoneChatLatestId;
+      if (_activePhoneChat) {
+        _activePhoneChat.controller.abort();
+        PhoneMirrorService.getInstance().publishError(String(_activePhoneChat.streamId), 'Stopped by user.');
+        win?.webContents.send('gemini-stream-done', { streamId: _activePhoneChat.streamId, source: 'phone' });
+        _activePhoneChat = null;
+      }
+    } else if (cmd.type === 'action') {
       // Re-use the same global-shortcut dispatch path the keyboard uses.
       // This keeps phone actions identical to key-triggered stealth actions.
       const helper = appState.getWindowHelper();
@@ -19512,6 +19474,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       // happen (audit RC-1 / finding #2).
       const myStreamId = ++_chatStreamId;
       const myPhoneId = ++_phoneChatLatestId;
+      if (_activePhoneChat) {
+        _activePhoneChat.controller.abort();
+        PhoneMirrorService.getInstance().publishError(String(_activePhoneChat.streamId), 'Replaced by a newer question.');
+      }
+      const phoneController = new AbortController();
+      _activePhoneChat = { streamId: myStreamId, controller: phoneController };
       // Symmetric strip on the phone-mirror chat path (defense-in-depth; see
       // stripEmbeddedAnswerContract for the contract-block leak rationale).
       const message = stripEmbeddedAnswerContract(cmd.message);
@@ -19588,7 +19556,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         const llmHelper = appState.processingHelper.getLLMHelper();
         // AbortController so the live-deadline driver can cancel a stalled provider
         // request (not just stop emitting) — mirrors the desktop chat path.
-        const phoneController = new AbortController();
         // Compute the same routing decision the desktop gemini-chat-stream uses
         // (ipcHandlers.ts ~959) so the phone-chat path applies the active custom
         // mode's voice + retrieved product material just like the desktop surface.
@@ -19715,7 +19682,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         // themselves. streamChat applies the same vision policy (private
         // vision, denied screenshot scope, vision-only) as the desktop's
         // typed chat, which passes its attachments the same way.
-        const phoneImagePaths = (() => {
+        const phoneAttachedPaths = (() => {
+          if (cmd.captureScreen) return [] as string[];
           try {
             const { validateImagePath } = require('./utils/curlUtils');
             const userDataDir = require('electron').app.getPath('userData');
@@ -19726,6 +19694,13 @@ export function initializeIpcHandlers(appState: AppState): void {
             return [] as string[];
           }
         })();
+        const phoneImagePaths = await preparePhoneChatImages({
+          captureScreen: cmd.captureScreen === true,
+          attachedPaths: phoneAttachedPaths,
+          capture: () => appState.takeScreenshot(false),
+          isCurrent: () => _phoneChatLatestId === myPhoneId,
+        });
+        if (!phoneImagePaths) return; // replaced while capture was pending
         // The phone is a live surface like the overlay's typed box: a design
         // question asked from it gets the same diagram contract, and can refine
         // the design drawn on the desktop (one shared active design).
@@ -19875,6 +19850,8 @@ export function initializeIpcHandlers(appState: AppState): void {
           // be streaming ("[Error: …]" appended to an unrelated answer).
           win?.webContents.send('gemini-stream-error', err?.message || 'stream error', { streamId: null, source: 'phone-mirror' });
         }
+      } finally {
+        if (_activePhoneChat?.streamId === myStreamId) _activePhoneChat = null;
       }
     } else if (cmd.type === 'screenshot') {
       // Stealth screenshot: capture on PC → add to screenshot queue → ack to phone.

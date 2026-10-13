@@ -45,36 +45,19 @@ after(async () => {
   try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
 });
 
-test('a local-only start never needs LAN consent', () => {
+test('LAN can start without a pairing or consent step in this fork', () => {
   assert.equal(svc.needsLanBindConfirmation(false), false);
-});
-
-test('enabling with LAN on needs consent before anything binds', () => {
-  assert.equal(svc.isRunning(), false);
-  assert.equal(svc.needsLanBindConfirmation(true), true);
-});
-
-test('a LAN start already under way needs no consent: a decline could not stop it', () => {
-  // _start() sets exposeOnLan before it binds, so an in-flight boot restore of a
-  // saved LAN setting looks like this. Faked through the fields, not a real bind.
-  const saved = { starting: svc.starting, exposeOnLan: svc.exposeOnLan };
-  try {
-    svc.starting = new Promise(() => {});
-    svc.exposeOnLan = true;
-    assert.equal(svc.needsLanBindConfirmation(true), false);
-    svc.exposeOnLan = false; // a local-only start in flight still asks before LAN
-    assert.equal(svc.needsLanBindConfirmation(true), true);
-  } finally {
-    svc.starting = saved.starting;
-    svc.exposeOnLan = saved.exposeOnLan;
-  }
-});
-
-test('the LAN switch path asks for the same consent', async () => {
-  await assert.rejects(() => svc.setExposeOnLan(true), (e) => e?.name === 'LANBindConfirmationRequired');
-});
-
-test('once allowed this run, neither path asks again', () => {
-  svc.markLanBindDialogShown();
   assert.equal(svc.needsLanBindConfirmation(true), false);
+});
+
+test('fresh settings enable the service and LAN, explicit off remains respected', async () => {
+  const settingsFile = path.resolve(path.dirname(compiledServicePath), 'SettingsManager.js');
+  const { SettingsManager } = await import(pathToFileURL(settingsFile).href);
+  const settings = SettingsManager.getInstance();
+  assert.equal(settings.get('phoneMirrorEnabled'), true);
+  assert.equal(settings.get('phoneMirrorExposeOnLan'), true);
+  settings.set('phoneMirrorEnabled', false);
+  settings.set('phoneMirrorExposeOnLan', false);
+  assert.equal(settings.get('phoneMirrorEnabled'), false);
+  assert.equal(settings.get('phoneMirrorExposeOnLan'), false);
 });

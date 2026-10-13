@@ -1,4 +1,4 @@
-import { LLM_REQUEST_TIMEOUT_MS } from '../llm/requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from '../llm/requestTimeout';
 import type { FallbackConfig } from '../llm/streamFallbackEngine';
 import { MODEL_GONE_COOLDOWN_MS } from '../llm/streamFallbackEngine';
 
@@ -92,7 +92,7 @@ export const DEFAULT_DIRECT_ASSIST_FALLBACK_CONFIG: FallbackConfig = {
   logPrefix: 'DirectAssist',
   maxAttempts: DIRECT_ASSIST_SELECTED_MAX_ATTEMPTS,
   ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
-  interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
+  interChunkTimeoutMs: LLM_STREAM_IDLE_TIMEOUT_MS,
   authCooldownMs: 300_000,
   transientCooldownMs: 30_000,
   incompatibleCooldownMs: 600_000,

@@ -1,4 +1,4 @@
-import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
+import { LLM_REQUEST_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from './requestTimeout';
 /**
  * Vision-flavoured binding of the shared fallback engine.
  *
@@ -41,7 +41,7 @@ export const DEFAULT_VISION_FALLBACK_CONFIG: FallbackConfig = {
   // multi-screenshot requests. 20s base; per-provider overrides bump Pro higher
   // and the call site scales with image count.
   ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
-  interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
+  interChunkTimeoutMs: LLM_STREAM_IDLE_TIMEOUT_MS,
   authCooldownMs: 300_000,
   transientCooldownMs: 30_000,
   incompatibleCooldownMs: 600_000,
