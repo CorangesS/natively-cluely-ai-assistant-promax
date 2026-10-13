@@ -13,7 +13,6 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { NativelyQuotaBanner } from "./components/NativelyQuotaBanner"
 import { useTrialExpiry }       from "./components/trial/useTrialExpiry"
-import { TrialMeterToaster }    from "./components/trial/TrialMeterToaster"
 import type { TrialUsage, TrialLimits } from './types/nativelyUsage';
 import { FreeTrialModal }       from "./components/trial/FreeTrialModal"
 import { OrchestratorProvider, OrchestratedToasterHost, setUserState as setOrchestratorUserState, emitOrchestratorEvent } from "./components/onboarding/OrchestratedToasterHost"
@@ -892,11 +891,6 @@ const App: React.FC = () => {
           .catch(() => {});
       }
 
-      // Donation status (support toaster gate)
-      window.electronAPI?.getDonationStatus?.()
-        .then(s => setOrchestratorUserState({ donationShouldShow: s?.shouldShow ?? false }))
-        .catch(() => {});
-
       // Extension connection state
       window.electronAPI?.phoneMirrorGetInfo?.()
         .then(info => setOrchestratorUserState({
@@ -1489,7 +1483,6 @@ const App: React.FC = () => {
         {!isolateGlobalSurfaces && <UpdateBanner />}
         {!isolateGlobalSurfaces && <NativelyQuotaBanner />}
         {/* The running trial's clock and its two allowances, on Home only. */}
-        {!isolateGlobalSurfaces && (isLauncherWindow || isDefault) && <TrialMeterToaster trial={activeTrial} ready={isAppReady && !showTrialExpiredModal} onSeePlans={() => openSettingsExclusive('plans')} />}
 
         {/* Orchestrated onboarding toasters (single-slot, controlled by OnboardingOrchestrator) */}
         {/* Not under the first-launch welcome: its cards follow Get started. */}
@@ -1500,7 +1493,7 @@ const App: React.FC = () => {
         )}
 
 
-        {/* Post-trial upgrade modal — shown when trial expires */}
+        {/* Functional trial status and API setup, without purchase prompts. */}
         {!isolateModals && (isLauncherWindow || isDefault) && showTrialExpiredModal && (
           <FreeTrialModal
             usage={activeTrial?.usage ?? { ai: 0, ai_tokens: 0, stt_seconds: 0, search: 0 }}

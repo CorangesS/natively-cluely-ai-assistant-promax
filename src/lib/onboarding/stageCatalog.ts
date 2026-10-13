@@ -15,7 +15,6 @@
  */
 
 import type { Ctx, StageConfig, ToasterId, UserState, Triggers } from './orchestrator';
-import { entryOf } from '../cards/cardPolicy.mjs';
 
 /**
  * Engagement policy for the review prompt, mirrored from the review ledger
@@ -63,23 +62,10 @@ const home = (ms: number): Triggers => ({
   requiresMeetingInactive: true,
 });
 
-const hasNoKeys = (s: UserState) => !s.hasNativelyKey && !s.hasOwnAiKey;
-
-/** No promotional card during a free trial, none for Max/Ultra subscribers. */
-const promoAudience = (s: UserState) => !s.hasTrialToken && s.planTier !== 'max' && s.planTier !== 'ultra';
-
 export const STAGE_ORDER: ToasterId[] = [
   'permissions',
-  'natively_api_new',
-  'browser_extension',
   'profile_intelligence',
   'modes_manager',
-  'max_ultra',
-  'natively_api_existing',
-  'profile_ad',
-  'jd_ad',
-  'review_prompt',
-  'support',
 ];
 
 export const STAGES: StageConfig[] = [
@@ -98,39 +84,6 @@ export const STAGES: StageConfig[] = [
     reopensWhenReEligible: true,
   },
 
-  // ── Onboarding (day 1 allowed, one per launch) ────────────────
-  // There is no free-trial card: the trial starts by itself when a meeting
-  // starts with no AI (src/lib/trial/autoTrial.mjs), and the overlay says so.
-  // The card reached about one new install in twelve; half of them started
-  // their first meeting with nothing set up.
-  //
-  // Natively API "Skip the setup": for someone with no way to get an answer
-  // once the trial is not an option. `trialClaimed` is set by every way a trial
-  // can end up used; the ledger test keeps installs that turned the old trial
-  // card down for good, before it was removed.
-  {
-    id: 'natively_api_new',
-    order: 3,
-    card: 'natively_api_new',
-    triggers: home(6_000),
-    requiresStages: ['permissions'],
-    customPredicate: ({ userState: s }) =>
-      s.adsAvailable && hasNoKeys(s) && !s.isPremium && !s.hasTrialToken
-      && (s.trialClaimed || (!!s.cardLedger && entryOf(s.cardLedger, 'trial_promo').retired)),
-  },
-
-  // Browser extension: until it is connected (read live). It waits as long as
-  // the API offer above: an earlier deadline would show it first and spend the
-  // launch's one onboarding card before `order` could rank them.
-  {
-    id: 'browser_extension',
-    order: 4,
-    card: 'browser_extension',
-    triggers: home(6_000),
-    requiresStages: ['permissions'],
-    customPredicate: ({ userState: s }) => s.extensionSupported && !s.extensionConnected,
-  },
-
   // ── Gate-only markers (no UI; kept for their persisted completion) ──
   {
     id: 'profile_intelligence',
@@ -138,7 +91,7 @@ export const STAGES: StageConfig[] = [
     onceEver: true,
     isGateOnly: true, // UI is the Launcher's header icon popover, not this stage
     triggers: home(4_000),
-    requiresStages: ['browser_extension'],
+    requiresStages: ['permissions'],
     skipWhen: (s) =>
       s.hasProfile ||
       s.isPremium ||
@@ -156,55 +109,7 @@ export const STAGES: StageConfig[] = [
       s.activeModeSet,
   },
 
-  // ── Promotional (1 per 72 h, from 24 h after first launch; order = priority) ──
-  {
-    id: 'max_ultra',
-    order: 10,
-    card: 'max_ultra',
-    triggers: home(10_000),
-    customPredicate: ({ userState: s }) =>
-      s.adsAvailable && promoAudience(s) && s.planTier === 'pro' && s.nativelyQuotaPct >= MAX_ULTRA_QUOTA_PCT,
-  },
-  {
-    id: 'natively_api_existing',
-    order: 11,
-    card: 'natively_api_existing',
-    triggers: home(10_000),
-    customPredicate: ({ userState: s }) =>
-      s.adsAvailable && promoAudience(s) && s.hasOwnAiKey && !s.hasNativelyKey && !s.isPremium,
-  },
-  {
-    id: 'profile_ad',
-    order: 12,
-    card: 'profile_ad',
-    triggers: home(10_000),
-    customPredicate: ({ userState: s }) => s.adsAvailable && promoAudience(s) && !s.isPremium && !s.hasProfile,
-  },
-  {
-    id: 'jd_ad',
-    order: 13,
-    card: 'jd_ad',
-    triggers: home(10_000),
-    customPredicate: ({ userState: s }) => s.adsAvailable && promoAudience(s) && !s.isPremium && s.hasProfile && !s.hasJD,
-  },
-  {
-    id: 'review_prompt',
-    order: 14,
-    card: 'review_prompt',
-    triggers: home(10_000),
-    // Engagement is a predicate, not `triggers`: the orchestrator ANDs triggers
-    // and the policy is "sessions OR usage" (see reviewEngagementMet).
-    customPredicate: (ctx) => promoAudience(ctx.userState) && reviewEngagementMet(ctx),
-  },
-  {
-    id: 'support',
-    order: 15,
-    card: 'support',
-    triggers: home(10_000),
-    customPredicate: (ctx) =>
-      promoAudience(ctx.userState) && !ctx.userState.isPremium
-      && (ctx.turnCount >= SUPPORT_MIN_TURNS || launchesOf(ctx) >= SUPPORT_MIN_LAUNCHES),
-  },
+
 ];
 
 // ─── Quiet window stage ───────────────────────────────────────────

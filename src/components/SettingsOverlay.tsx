@@ -2339,7 +2339,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     >
                                         {(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro') && navActivePill}
                                         <HiCreditCard size={16} />
-                                        <span>{t('Plans & Billing')}</span>
+                                        <span>{t('Account')}</span>
                                     </button>
                                     <button
                                         onClick={() => setActiveTab('ai-providers')}

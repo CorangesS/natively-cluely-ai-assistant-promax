@@ -141,9 +141,9 @@ describe('Issue 1: live-deadline harness aborts stalled providers', () => {
     assert.equal(firstUsefulDeadlineMs('identity_answer', true), LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS);
     assert.equal(firstUsefulDeadlineMs('coding_question_answer', true), LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS);
     assert.equal(firstUsefulDeadlineMs('jd_fit_answer', true), LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS);
-    // Default (cloud) is unchanged and far shorter — back-compat for existing callers.
+    // All interactive routes now share the user-selected 60-second budget.
     assert.equal(firstUsefulDeadlineMs('identity_answer'), LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS);
-    assert.ok(firstUsefulDeadlineMs('coding_question_answer', false) < LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS);
+    assert.equal(firstUsefulDeadlineMs('coding_question_answer', false), LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS);
   });
 
   test('a local model that produces its first token AFTER the cloud cap but WITHIN the local budget is NOT aborted', async () => {

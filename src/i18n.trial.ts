@@ -58,11 +58,11 @@ const ROWS: Record<string, Row> = {
     '無料トライアルは終了しました',
     'La prueba gratuita terminó',
   ],
-  'Pick a plan or add your own keys to keep getting answers.': [
-    'Выберите тариф или добавьте свои ключи, чтобы и дальше получать ответы.',
-    '选择套餐或添加你自己的密钥，以继续获得回答。',
-    'プランを選ぶか自分のキーを追加すると、引き続き回答を受け取れます。',
-    'Elige un plan o añade tus propias claves para seguir recibiendo respuestas.',
+  'Add your own API keys to keep getting answers.': [
+    'Добавьте собственные API-ключи, чтобы продолжить получать ответы.',
+    '添加你自己的 API 密钥以继续获取回答。',
+    '回答を続けて受け取るには、自分の API キーを追加してください。',
+    'Añade tus propias claves API para seguir recibiendo respuestas.',
   ],
   'See plans': ['Посмотреть тарифы', '查看套餐', 'プランを見る', 'Ver planes'],
 

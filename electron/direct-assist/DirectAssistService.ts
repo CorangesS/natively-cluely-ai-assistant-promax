@@ -1,3 +1,4 @@
+import { LLM_REQUEST_TIMEOUT_MS } from '../llm/requestTimeout';
 import { DirectAssistError, describeDirectAssistFailure, normalizeDirectAssistError } from './errors';
 import {
   DEFAULT_DIRECT_ASSIST_FALLBACK_CONFIG,
@@ -23,7 +24,7 @@ import type {
   DirectAssistTransport,
 } from './types';
 
-export const DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS = 45_000;
+export const DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 
 export interface DirectAssistTimerScheduler {
   set(callback: () => void, delayMs: number): unknown;

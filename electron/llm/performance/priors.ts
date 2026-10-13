@@ -1,3 +1,4 @@
+import { LLM_REQUEST_TIMEOUT_MS } from '../requestTimeout';
 // electron/llm/performance/priors.ts
 //
 // Shipped priors — what Natively expects from a provider it has never measured.
@@ -57,23 +58,8 @@ export const ROUTE_STREAM_IDLE_PRIOR_MS: Record<RouteKind, number> = {
   default_provider: LIVE_INTER_TOKEN_STALL_MS,
 };
 
-/**
- * Safety bounds on the ADAPTIVE stream-idle value (Phase 17).
- *
- * The floor is the thing that matters. A stall guard is the only protection
- * against a stream that connects, emits one token and then dies, and evidence
- * from a very chatty provider (median gap 40ms) would otherwise derive a
- * sub-second guard that fires on any ordinary hiccup — a provider pausing to
- * run a tool call, a laptop's scheduler, a GC pause. 2500ms is above every
- * legitimate pause we can name and still detects a dead stream ~3x faster than
- * today's 8000.
- *
- * The ceiling is today's constant. Widening past 8s has a cost the floor does
- * not: the user sits watching a half-written answer that will never finish. If
- * a provider genuinely needs more than 8s between chunks, that is a finding to
- * surface in diagnostics, not a deadline to quietly grant.
- */
-export const STREAM_IDLE_MIN_MS = 2_500;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const STREAM_IDLE_MIN_MS = LLM_REQUEST_TIMEOUT_MS;
 export const STREAM_IDLE_MAX_MS = LIVE_INTER_TOKEN_STALL_MS;
 
 /**
@@ -170,22 +156,9 @@ export const STREAM_IDLE_ADAPTIVE_ROUTES: ReadonlySet<RouteKind> =
   new Set<RouteKind>(['vision', 'server_cascade', 'user_endpoint', 'default_provider']);
 
 
-/**
- * Bounds on the adaptive CONNECT timeout.
- *
- * The floor is today's shipped value and it is a floor, not a starting point:
- * this deadline may only ever WIDEN. That asymmetry is not caution, it is a
- * recorded defect — a 4s connect timer has already killed a working vision
- * request in this app by a 6ms margin. A connect phase is DNS + TCP + TLS on
- * whatever network the user happens to be on, which is precisely the quantity
- * that degrades without anything being broken.
- *
- * The ceiling keeps connect from eating the budget it sits inside. The tightest
- * route ceiling is the default provider's 8000ms, so a connect allowance above
- * that could consume a whole turn before a single token was even possible.
- */
-export const CONNECT_MIN_TIMEOUT_MS = 4_000;
-export const CONNECT_MAX_TIMEOUT_MS = 8_000;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const CONNECT_MIN_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+export const CONNECT_MAX_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 
 /**
  * Headroom over the slowest connect actually observed.

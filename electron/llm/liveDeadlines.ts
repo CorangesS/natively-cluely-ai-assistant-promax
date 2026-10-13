@@ -1,15 +1,8 @@
+import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
 // electron/llm/liveDeadlines.ts
 //
-// Single source of truth for the LIVE-COPILOT latency contract (Issue 1, P0).
-// What-to-answer and live manual chat must NEVER make the user wait 10s+ or show
-// an empty answer.
-//
-// That sentence was written for, and still governs, the TEXT path. It does not
-// hold for a turn carrying a screenshot: image encode + multimodal prefill put
-// a healthy vision first-token at 3-8s (measured p50 5.6s, tail 11.6s), so a
-// 10s-shaped ceiling there does not protect the user, it just replaces a real
-// answer with a canned line. LIVE_VISION_TOTAL_HARD_TIMEOUT_MS is the vision
-// ceiling and is deliberately above 10s — see its own comment.
+// Interactive requests allow 60 seconds for first useful output or a later
+// silent gap. Continuous output can run longer than one minute.
 //
 // These budgets are shared by IntelligenceEngine (WTA),
 // ipcHandlers (manual chat), and the benchmark runners so the product and its
@@ -30,47 +23,12 @@ export const LIVE_FIRST_USEFUL_BUDGET_MS = {
   very_hard: 3500,
 } as const;
 
-/**
- * Hard cap on the FIRST useful token from the provider before we abort.
- *
- * 8000ms as of 2026-09-06 (was 7000). This is the DEFAULT-PROVIDER route's budget:
- * a shipped provider-list entry called directly (Gemini / Groq / Claude / OpenAI /
- * DeepSeek), where the client is the ONLY layer that can recover — there is no
- * server cascade behind it to rotate, so the client giving up and falling back is
- * the whole recovery story. See totalHardTimeoutMs() for the full route table.
- *
- * The history below explains the 3500 -> 7000 move and still governs the floor.
- *
- * 7000ms, NOT 3500ms. MiniMax (the strong fallback when the Gemini chain is down —
- * see natively-api lib/minimaxProvider.js) has a 4-6s first-token latency; a 3500ms
- * cap aborted every MiniMax stream before it produced a token, so the fallback could
- * never serve a live answer. Raising the cap is near-free on healthy responses: this
- * deadline only FIRES when a provider is genuinely slow to first-token — a healthy
- * Gemini/Groq still streams its first token in <1s and never reaches the cap, whether
- * it's set to 3.5s or 7s. The cost is paid only in the narrow window where a provider
- * takes 3.5-7s AND aborting to the next fallback would have been faster — rare, since
- * MiniMax IS the next strong fallback.
- */
-export const LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS = 8000;
-/**
- * First-useful cap for genuinely complex answers (coding/system-design). Equal to the
- * standard cap now that both must clear MiniMax's 4-6s first-token; kept as a separate
- * symbol so the two can diverge again without touching call sites.
- */
-export const LIVE_PROVIDER_FIRST_USEFUL_COMPLEX_TIMEOUT_MS = 8000;
-/**
- * First-useful cap for a LOCAL provider (Ollama). The 7s cloud cap is wrong for a
- * local model: a cold model must load its weights into RAM before the first token,
- * which on a laptop is 8-12s for a 7-9B model (measured: qwen3.5:9b cold-loads in
- * ~8.5s on a 16GB MacBook Air, before a single token). With the 7s cap, every cold
- * local generation was aborted to zero tokens and the user saw the canned
- * "Let me come back to that in just a moment." fallback. 30s covers a cold load +
- * a slow first token; once the model is warm (we pin keep_alive from prewarm), the
- * real first token still arrives in <1s and this ceiling is never reached — so the
- * cost is paid only on the genuine first cold call. This guards first-token only;
- * the inter-token stall guard (unchanged) still protects against a mid-stream hang.
- */
-export const LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS = 30000;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_PROVIDER_FIRST_USEFUL_COMPLEX_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_LOCAL_FIRST_USEFUL_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 
 /**
  * Is `text` a COMPLETE short answer, as opposed to a truncated fragment?
@@ -99,88 +57,14 @@ export function isCompleteShortAnswer(text: string): boolean {
   if (!/[.!?][)\]"'’”]*$/.test(t)) return false;
   return t.split(/\s+/).filter(Boolean).length >= 5;
 }
-/**
- * Absolute ceiling on a live answer's first-useful token (the no-fallback budget).
- * Sits above the 7s first-useful cap so a MiniMax stream about to deliver at
- * ~6.5s isn't guillotined by this ceiling.
- *
- * MUST ALSO STAY ABOVE natively-api's AI_TTFT_BUDGET_MS (10s), and this is the
- * binding constraint. A Natively-key user's chat goes to
- * `${NATIVELY_API_URL}/v1/chat` (LLMHelper.ts), where the server runs a
- * SEQUENTIAL provider cascade (Gemini Flash -> MiniMax-M3 -> Gemini Pro) and
- * cuts over to the next provider when one is slow to first token. That cutover
- * is the thing that actually RESCUES a slow turn — the client, by contrast, can
- * only give up.
- *
- * At the previous 8000 the ordering was inverted: the client abandoned the turn
- * 2s BEFORE the server would have rotated, so the user got the local fallback
- * (or, for coding, a fabricated scaffold) instead of the answer the server was
- * about to deliver. 13000 = the server's 10s cutover + 3s for the next leg to
- * produce a first token. DeadlineBudgetOrdering2026_08_10.test.mjs reads
- * AI_TTFT_BUDGET_MS out of server.js and fails if these drift back out of order.
- *
- * Cost of the raise is near-zero: this ceiling only fires when a provider is
- * genuinely slow to first token — a healthy stream delivers in <1s and never
- * approaches it. The inter-token stall guard (unchanged, 8s) still bounds a
- * mid-stream hang, which is a different failure mode.
- */
-export const LIVE_TOTAL_HARD_TIMEOUT_MS = 13000;
-/**
- * VISION counterpart to LIVE_TOTAL_HARD_TIMEOUT_MS: the ceiling for an
- * image-bearing turn served by a provider OTHER than the natively cascade.
- *
- * 13000 is not a general-purpose number. Its derivation — read the comment
- * above — is "the natively-api server's 10s cutover + 3s for the next leg".
- * A user whose selected model is their own OpenRouter/LiteLLM/Gemini key never
- * touches that server, so on their turns 13000 is an arbitrary bound applied
- * for a reason that does not hold, and it was truncating the vision layer's own
- * budget: streamVisionWithFallback deliberately runs at ttftTimeoutMs 20_000
- * ("Vision TTFT is slower than text — image encode + multimodal prefill"), and
- * the vision call site scales FLASH_TTFT_MS/PRO_TTFT_MS up from 20s with image
- * count. Every one of those was dead: the outer 13s always fired first.
- *
- * Measured through the real app (natively_debug (3).log, one meeting, 33 vision
- * turns on a Custom/OpenRouter provider): 26 answers delivered with TTFT p50
- * 5.6s and a maximum of 11.6s; the remaining 7 (21%) were aborted at the 13.0s
- * ceiling and replaced with "The model did not produce an answer in time…". A
- * ceiling 1.4s above the observed tail is not a safety net — it is a coin flip.
- * 20_000 matches the vision chain's own base budget so a single attempt gets
- * the time that layer was already designed to give it.
- *
- * What this does NOT do: resurrect attempts 2 and 3. The chain is 3 attempts of
- * up to 20s, and no ceiling compatible with the live-copilot latency contract
- * can span that — the second provider stays unreachable on a first-token
- * timeout, by design. This buys the FIRST attempt its documented budget and
- * nothing more; say so plainly rather than letting the next reader re-derive
- * the confusion the 20_000 constant has already caused once.
- */
-export const LIVE_VISION_TOTAL_HARD_TIMEOUT_MS = 20000;
-/**
- * Ceiling for a provider the USER pointed at us: an OpenAI-compatible Custom
- * Provider, a cURL provider, a LiteLLM gateway, an NVIDIA NIM endpoint.
- *
- * Same argument as the vision ceiling above, applied to the text path. 13000 is
- * "the natively-api server's 10s cutover + 3s"; a user on their own endpoint
- * never reaches that server, so on their turns 13000 is a bound imported from a
- * mechanism that is not in the request path. The number that IS in the path is
- * whatever their gateway does — a LiteLLM proxy fronting a slow upstream, a
- * self-hosted NIM cold-starting a container, an OpenRouter model queueing — and
- * none of it is observable from here.
- *
- * 15000 buys those routes ~2s over the natively ceiling. It is deliberately
- * BELOW the 20s vision ceiling and not merged with it: vision is sized off a
- * measured 11.6s tail on image turns (see above), and a text turn on the same
- * provider has no image encode or multimodal prefill to pay for.
- */
-export const LIVE_USER_ENDPOINT_TOTAL_HARD_TIMEOUT_MS = 15000;
-/**
- * Floor and ceiling for the ADAPTIVE user-endpoint budget below.
- *
- * The floor is the default-provider ceiling: however fast a gateway is measured
- * to be, it never earns a shorter leash than a direct API call. The ceiling is
- * the vision ceiling: a text turn never out-waits an image turn.
- */
-export const LIVE_USER_ENDPOINT_MIN_TOTAL_HARD_TIMEOUT_MS = 8000;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_TOTAL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_VISION_TOTAL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_USER_ENDPOINT_TOTAL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_USER_ENDPOINT_MIN_TOTAL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 export const LIVE_USER_ENDPOINT_MAX_TOTAL_HARD_TIMEOUT_MS = LIVE_VISION_TOTAL_HARD_TIMEOUT_MS;
 /**
  * How much headroom to leave above the slowest first token actually observed
@@ -256,12 +140,8 @@ export function userEndpointBudgetMs(observed?: ObservedLatency | null): number 
  * disagreeing about the same turn.
  */
 export const LIVE_DEFAULT_PROVIDER_TOTAL_HARD_TIMEOUT_MS = LIVE_PROVIDER_FIRST_USEFUL_HARD_TIMEOUT_MS;
-/**
- * Local-provider counterpart to LIVE_TOTAL_HARD_TIMEOUT_MS: the no-fallback ceiling
- * when there is no deterministic fallback to swap in. Matches the local first-useful
- * cap so a cold local load isn't aborted to an empty answer.
- */
-export const LIVE_LOCAL_TOTAL_HARD_TIMEOUT_MS = 30000;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_LOCAL_TOTAL_HARD_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 /**
  * After the first useful token has streamed, a long answer (coding scaffold +
  * sections) may legitimately keep flowing — we only abort on a genuine
@@ -295,8 +175,8 @@ export const LIVE_LOCAL_TOTAL_HARD_TIMEOUT_MS = 30000;
  * through untouched: a cold weight load is not a fraction of anything.
  */
 export const REPAIR_BUDGET_SHARE_OF_ROUTE = 0.6;
-export const REPAIR_MIN_FIRST_USEFUL_MS = 7000;
-export const REPAIR_MAX_FIRST_USEFUL_MS = 12000;
+export const REPAIR_MIN_FIRST_USEFUL_MS = LLM_REQUEST_TIMEOUT_MS;
+export const REPAIR_MAX_FIRST_USEFUL_MS = LLM_REQUEST_TIMEOUT_MS;
 /**
  * Headroom the repair window must leave over the endpoint's OBSERVED first
  * token, when we have one.
@@ -310,22 +190,8 @@ export const REPAIR_MAX_FIRST_USEFUL_MS = 12000;
  * measurement, not comfortably outlast it.
  */
 export const REPAIR_LATENCY_MARGIN_MS = 2000;
-/**
- * Floor for a repair that carries the turn's SCREENSHOT.
- *
- * These deadlines were sized when a repair was text-only, because that is all
- * they were — the repair call passed `undefined` for imagePaths. Now that a
- * repair inherits the answer's images it pays image encode + multimodal
- * prefill, which this file measures at p50 5.6s and a tail of 11.6s. A 7000ms
- * window there can never reliably finish, which would re-create the
- * "wasted repair" defect from the other direction, one commit after fixing it.
- *
- * Above REPAIR_MAX_FIRST_USEFUL_MS deliberately: that cap exists to stop a
- * background repair holding the UI, and it was also sized for text. A vision
- * repair that cannot clear the measured tail is not cheaper, it is free to
- * throw away. Still well under the 20s vision ANSWER ceiling.
- */
-export const REPAIR_VISION_MIN_FIRST_USEFUL_MS = 14000;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const REPAIR_VISION_MIN_FIRST_USEFUL_MS = LLM_REQUEST_TIMEOUT_MS;
 
 export function repairDeadlineMs(opts: {
   isLocal?: boolean;
@@ -368,29 +234,10 @@ export function repairDeadlineMs(opts: {
   );
 }
 
-/**
- * Total wall clock ONE turn may spend trying to produce a first token, across
- * the original attempt and its regeneration.
- *
- * A regeneration is a genuine second attempt at the same request, so without a
- * total the turn's worst case is simply doubled — 40s on a vision turn, long
- * past the point the user has given up and asked again. This bounds the pair,
- * not each half.
- *
- * Deliberately above this file's "never make the user wait 10s+" line, which
- * governs a SINGLE attempt on the text path. A user who has already waited out
- * attempt 1 is in a failure they can see; the choice is between a bounded second
- * try and the canned no-answer line, and that is a different trade than the one
- * the 10s rule was written for.
- */
-export const LIVE_TURN_TOTAL_BUDGET_MS = 25000;
-/**
- * A regeneration must get a MEANINGFUL share of its route's budget or not run at
- * all. A vision turn that has already spent 20s of a 25s total would get 5s —
- * far under the 11.6s tail a vision first token is measured at, so it could only
- * fail, having cost the user another 5s to learn nothing.
- */
-export const REGENERATION_MIN_SHARE_OF_ROUTE = 0.6;
+/** Fixed 60-second user-request budget; latency measurements cannot shorten it. */
+export const LIVE_TURN_TOTAL_BUDGET_MS = LLM_REQUEST_TIMEOUT_MS;
+/** Only start regeneration if a full route wait remains in the turn budget. */
+export const REGENERATION_MIN_SHARE_OF_ROUTE = 1;
 
 /**
  * Budget for a verbatim regeneration after the first attempt produced nothing,
@@ -411,7 +258,7 @@ export function regenerationBudgetMs(opts: { routeBudgetMs: number; elapsedMs: n
   return Math.round(budget);
 }
 
-export const LIVE_INTER_TOKEN_STALL_MS = 8000;
+export const LIVE_INTER_TOKEN_STALL_MS = LLM_REQUEST_TIMEOUT_MS;
 /** Benchmark per-question hard timeout — the outer wrapper that must never be exceeded. */
 export const BENCHMARK_PER_QUESTION_HARD_TIMEOUT_MS = 30000;
 
@@ -811,6 +658,9 @@ export async function raceStreamWithDeadline(opts: {
         nextP.catch(() => { /* loser of the race — defused */ });
         res = await Promise.race([nextP, deadline]);
         if (timer) clearTimeout(timer);
+        // Ownership can change while next() is pending. Never deliver an old
+        // request's late token or timeout after a replacement request starts.
+        if (shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
         if (res === DEADLINE) {
           if (!useful) {
             cleanup('first_useful_timeout');
@@ -823,6 +673,7 @@ export async function raceStreamWithDeadline(opts: {
         }
       } else {
         res = await iterator.next();
+        if (shouldAbort?.()) { cleanup('aborted'); return 'aborted'; }
       }
       if (res.done) { cleanup('done'); return 'done'; }
       const now = Date.now();

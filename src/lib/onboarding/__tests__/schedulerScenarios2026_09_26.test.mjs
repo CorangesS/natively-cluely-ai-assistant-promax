@@ -103,123 +103,23 @@ function launch(ledger, user = {}) {
   return s;
 }
 
-const NO_KEYS = { hasNativelyKey: false, hasOwnAiKey: false, isPremium: false, planTier: 'free' };
+for (const [name, user] of [
+  ['new user', { hasNativelyKey: false, hasOwnAiKey: false, isPremium: false }],
+  ['own API keys', { hasOwnAiKey: true }],
+  ['used trial', { trialClaimed: true }],
+  ['Pro near quota', { isPremium: true, planTier: 'pro', nativelyQuotaPct: 95 }],
+]) {
+  test(`${name}: no promotion on launch or after several days`, () => {
+    for (const days of [0, 4, 30]) {
+      const s = launch(age(policy.emptyLedger(Date.now()), days * D), user).run(120000);
+      assert.deepEqual(s.seen, []);
+      s.end();
+    }
+  });
+}
 
-// The free trial is not one of these cards: it starts by itself when a meeting
-// starts with no AI (src/lib/trial/autoTrial.mjs). So a new user with no keys
-// meets Permissions and then the extension, and the Natively API offer takes
-// the onboarding slot only once that trial has been used.
-test('1. new user, no keys: Permissions → the extension on day 1; nothing more that day; no promo before 24 h', () => {
-  const first = launch(policy.emptyLedger(Date.now()), { ...NO_KEYS, permsShown: false });
-  first.run(5_000);
-  assert.equal(first.active(), 'permissions');
-  first.close(null);
-  first.run(55_000);
-  assert.equal(first.active(), null, '60 s between cards');
-  first.run(15_000);
-  assert.equal(first.active(), 'browser_extension');
-  first.close('later').run(10 * 60_000).end();
-  assert.deepEqual(first.seen, ['permissions', 'browser_extension'], 'one onboarding card per launch, no promo on day 1, no trial card');
-
-  const second = launch(age(first.ledger, 2 * H), NO_KEYS).run(10 * 60_000);
-  assert.deepEqual(second.seen, [], 'the extension was put off, the trial is still ahead of them, and no promo on day 1');
-  second.end();
-
-  const third = launch(age(second.ledger, 23 * H), NO_KEYS).run(2 * 60_000);
-  assert.deepEqual(third.seen, ['profile_ad'], 'the first promo once 24 h have passed');
-  third.end();
-});
-
-test('1b. no keys, trial already used: the Natively API offer comes before the extension', () => {
-  const used = { ...NO_KEYS, trialClaimed: true };
-  const first = launch(policy.emptyLedger(Date.now()), used).run(60_000);
-  assert.deepEqual(first.seen, ['natively_api_new']);
-  first.close('later').run(10 * 60_000).end();
-  assert.deepEqual(first.seen, ['natively_api_new'], 'one onboarding card per launch');
-
-  const second = launch(age(first.ledger, 2 * H), used).run(60_000);
-  assert.deepEqual(second.seen, ['browser_extension'], 'the extension on a later launch');
-  second.end();
-});
-
-test('2. own keys on day 4: "Three services" shows; the next promo waits 72 h', () => {
-  const user = { hasOwnAiKey: true, extensionConnected: true };
-  const first = launch(age(policy.emptyLedger(Date.now()), 4 * D), user).run(2 * 60_000);
-  assert.deepEqual(first.seen, ['natively_api_existing']);
-  first.close('later').end();
-
-  const nextDay = launch(age(first.ledger, 1 * D), user).run(5 * 60_000);
-  assert.deepEqual(nextDay.seen, [], 'inside the 72 h budget');
-  nextDay.end();
-
-  const later = launch(age(nextDay.ledger, 2 * D + H), user).run(2 * 60_000);
-  assert.deepEqual(later.seen, ['profile_ad'], 'budget open again; "Three services" waits out its strike');
-  later.end();
-});
-
-test('3. three "later"s: back after 7 and 21 days, then never', () => {
-  const user = { hasNativelyKey: true };
-  let s = launch(policy.emptyLedger(Date.now()), user).run(60_000);
-  assert.deepEqual(s.seen, ['browser_extension']);
-  s.close('later').end();
-  // Other cards (promos, from day 2) are not this scenario: follow the extension only.
-  const back = (ledger, days) => launch(age(ledger, days * D), user).run(60_000);
-  const ext = (sess) => sess.seen.filter((id) => id === 'browser_extension');
-  const closeExt = (sess) => { if (sess.active() === 'browser_extension') sess.close('later'); return sess; };
-
-  s = back(s.ledger, 6); assert.deepEqual(ext(s), [], 'not before 7 days'); s.end();
-  s = back(s.ledger, 1); assert.deepEqual(ext(s), ['browser_extension'], 'back after 7 days'); closeExt(s).end();
-  s = back(s.ledger, 20); assert.deepEqual(ext(s), [], 'not before 21 days'); s.end();
-  s = back(s.ledger, 1); assert.deepEqual(ext(s), ['browser_extension'], 'back after 21 days'); closeExt(s).end();
-  s = back(s.ledger, 400); assert.deepEqual(ext(s), [], 'the third strike retired it'); s.end();
-  assert.equal(policy.entryOf(s.ledger, 'browser_extension').retired, true);
-});
-
-test('4. a crash while a card is open costs no strike; the card can return', () => {
-  const user = { hasNativelyKey: true };
-  const crashed = launch(policy.emptyLedger(Date.now()), user).run(60_000);
-  assert.equal(crashed.active(), 'browser_extension');
-  // The process dies here: no outcome, and the persisted state still names the open card.
-  assert.equal(policy.entryOf(crashed.ledger, 'browser_extension').strikes, 0);
-  const next = launch(age(crashed.ledger, H), user).run(60_000);
-  assert.deepEqual(next.seen, ['browser_extension'], 'interrupted: it may show again');
-  next.end();
-});
-
-test('5. a meeting: nothing new opens, and an open card stays', () => {
-  const user = { hasNativelyKey: true };
-  const s = launch(policy.emptyLedger(Date.now()), user);
-  s.orch.emit({ type: 'meeting:state', isActive: true });
-  s.run(2 * 60_000);
-  assert.deepEqual(s.seen, [], 'nothing opens during a meeting');
-  s.orch.emit({ type: 'meeting:state', isActive: false });
-  s.run(60_000);
-  assert.equal(s.active(), 'browser_extension');
-  s.orch.emit({ type: 'meeting:state', isActive: true });
-  s.run(10_000);
-  assert.equal(s.active(), 'browser_extension', 'a meeting starting does not close an open card');
+test('permissions still appear when they need attention', () => {
+  const s = launch(policy.emptyLedger(Date.now()), { permsShown: false, permissionsNeedAttention: true }).run(10000);
+  assert.deepEqual(s.seen, ['permissions']);
   s.end();
-});
-
-test('6. Trial ended: nothing else opens, and an open card leaves the slot', () => {
-  const user = { hasNativelyKey: true };
-  const s = launch(policy.emptyLedger(Date.now()), { ...user, trialEndedOpen: true }).run(2 * 60_000);
-  assert.deepEqual(s.seen, []);
-  s.orch.setUserState({ trialEndedOpen: false });
-  s.run(60_000);
-  assert.equal(s.active(), 'browser_extension');
-  s.orch.setUserState({ trialEndedOpen: true });
-  assert.equal(s.active(), null, 'Trial ended takes the slot');
-  assert.equal(policy.entryOf(s.ledger, 'browser_extension').strikes, 0, 'interrupted, no strike');
-  s.end();
-});
-
-test('7. Pro at 80 %: Max/Ultra shows; "I\'m happy with Pro" retires it for good', () => {
-  const user = { isPremium: true, planTier: 'pro', hasNativelyKey: true, nativelyQuotaPct: 85, extensionConnected: true, hasProfile: true, hasJD: true };
-  const s = launch(age(policy.emptyLedger(Date.now()), 4 * D), user).run(2 * 60_000);
-  assert.deepEqual(s.seen, ['max_ultra']);
-  s.close('never').end();
-  const much = launch(age(s.ledger, 400 * D), { ...user, nativelyQuotaPct: 99 }).run(2 * 60_000);
-  assert.ok(!much.seen.includes('max_ultra'), 'never again, whatever the quota');
-  much.end();
 });

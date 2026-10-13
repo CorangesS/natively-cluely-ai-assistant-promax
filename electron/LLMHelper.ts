@@ -1,3 +1,4 @@
+import { LLM_REQUEST_TIMEOUT_MS } from './llm/requestTimeout';
 import { GoogleGenAI, ThinkingLevel } from "@google/genai"
 import Groq from "groq-sdk"
 import OpenAI from "openai"
@@ -213,21 +214,8 @@ const FAST_MODEL_JUDGE_RUNG_TIMEOUT_MS = 1800
 export const OPENROUTER_JUDGE_MODEL = 'openrouter/google/gemini-3.1-flash-lite'
 /** The judge's LAST model rung (the gateway, else Natively) may use most of the controller's 2.5 s. */
 const LAST_JUDGE_RUNG_TIMEOUT_MS = 2300
-/**
- * First-token budgets for the Gemini TEXT cascade, per rung.
- *
- * The cascade used one flat 2.5 s (DEFAULT_TEXT_FALLBACK_CONFIG) for every rung.
- * Measured 2026-09-26, streaming, on a live-sized answer prompt (13k-char system
- * instruction + 4k-char transcript), at the thinking level each model is sent:
- *   gemini-3.1-flash-lite (minimal)  1.0-1.5 s
- *   gemini-3.8-flash (low; it 400s on minimal) 1.9-2.4 s — the app's DEFAULT
- *   gemini-3.1-pro (low)              5.1-5.7 s
- * So the default model missed 2.5 s often enough that a live Auto Answer took
- * 13 s: Flash timed out twice, Pro (which can NEVER answer in 2.5 s) twice,
- * then the turn fell through to the Natively key — and a Gemini-only user got
- * no answer at all. Budgets are ~2× the measured first token.
- */
-export const GEMINI_TEXT_TTFT_MS = Object.freeze({ flashLite: 2_500, flash: 5_000, pro: 10_000 })
+/** Every Gemini text rung receives the full user-request first-token budget. */
+export const GEMINI_TEXT_TTFT_MS = Object.freeze({ flashLite: LLM_REQUEST_TIMEOUT_MS, flash: LLM_REQUEST_TIMEOUT_MS, pro: LLM_REQUEST_TIMEOUT_MS })
 // Ceiling for a fast call made with no caller signal (the preferFast callers).
 const FAST_MODEL_DEFAULT_TIMEOUT_MS = 8000
 // Codex's measured first token is 1.7-2.0 s (gpt-5.5; see DEFAULT_CODEX_CLI_CONFIG),
@@ -278,11 +266,6 @@ const AUTO_FAST_ORDER_TTL_MS = 30_000
 // A fast pick that failed before its first token steps aside this long, so the
 // following turns go to (and are timed for) whoever answers instead.
 const FAST_PICK_COOLDOWN_MS = 90_000
-// Share of the pick's route budget it gets to say its first word. A pick that
-// stalls past it is abandoned INSIDE the turn and the fallback answers; the
-// outer deadline would instead abort the whole turn, which looks like a user
-// cancel and teaches nothing. Healthy fast models answer far inside it.
-const FAST_PICK_FIRST_TOKEN_SHARE = 0.5
 /** A fast pick that stalled or ended silent — a failure to fall back from, never a cancel. */
 class FastPickFailure extends Error {
   constructor(public readonly kind: 'stall' | 'empty', message: string) {
@@ -410,39 +393,15 @@ type ReasoningEffortValue = NonNullable<OpenAI.ChatCompletionCreateParams['reaso
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 
-// ── Interactive-path connect timeout (REPORT_TO_CHATGPT §21 L1) ──────────────
-// The Natively SSE connect phase previously used a 10s ceiling. For the live
-// answer path that is far too long: a healthy connect is sub-second, and a
-// stalled connect should fail over fast. 4s leaves headroom for a transient
-// Railway DNS hiccup (the in-fetch DNS retry adds ~1s) while removing the 10s
-// tail. The TTFT race (textStreamFallback) handles the separate case of a fast
-// connect that then prefills slowly. Override per-call for non-interactive use.
-const INTERACTIVE_CONNECT_TIMEOUT_MS = 4_000;
+// Interactive connections use the same 60-second budget as first-token waits.
+const INTERACTIVE_CONNECT_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 
-// Direct Assist connect budgets. The 4s ceiling above is calibrated for the
-// LIVE path, where a connect that stalls is HANDED OFF — the ladder tries the
-// next provider. Direct Assist has no retry, no model ladder and no
-// cross-provider failover by design, so a deadline that fires there is a
-// user-visible hard failure with nothing behind it.
-//
-// Measured on the shipping default (`natively`, auto-selected by
-// CredentialsManager.setNativelyApiKey for anyone who has not deliberately
-// picked another model): text time-to-first-byte 1.2-2.0s, but a vision
-// request carrying a compressed screenshot lands at 2.1-4.0s — straddling the
-// 4s line, so screenshot answers failed intermittently with CONNECT_TIMEOUT
-// (one measured success cleared it by 6ms). These budgets stay inside
-// DEFAULT_DIRECT_ASSIST_STREAM_IDLE_TIMEOUT_MS (45s) so a genuinely dead
-// connection still ends promptly with a specific error.
-const DIRECT_ASSIST_CONNECT_TIMEOUT_MS = 15_000;
-const DIRECT_ASSIST_VISION_CONNECT_TIMEOUT_MS = 30_000;
+// Text and vision Direct Assist requests both allow a full connection window.
+const DIRECT_ASSIST_CONNECT_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
+const DIRECT_ASSIST_VISION_CONNECT_TIMEOUT_MS = LLM_REQUEST_TIMEOUT_MS;
 
-// First-useful-token budget for the Natively gateway on the TEXT path. Larger than
-// the shared 2.5s text default because the gateway's server-side fallback chain can
-// land on MiniMax (first token 3.3-7.7s); a 2.5s cap aborts it before it speaks.
-// 8s == LIVE_TOTAL_HARD_TIMEOUT_MS (the outer live-deadline ceiling), so this inner
-// per-provider gate never fires before the single source-of-truth deadline. See the
-// natively text-provider registration for the full rationale.
-const NATIVELY_TEXT_TTFT_MS = 8_000;
+// The gateway must not be cut off by a shorter per-provider first-token gate.
+const NATIVELY_TEXT_TTFT_MS = LLM_REQUEST_TIMEOUT_MS;
 /**
  * The smallest window in which a spare rung is worth opening at all. Below it
  * the rung is dropped: a request that cannot reach first token before the
@@ -5818,13 +5777,7 @@ let isMultimodal = !!(imagePaths?.length);
     return FAST_PICK_USER_ENDPOINT_FAMILIES.has(family) ? 'user_endpoint' : 'default_provider';
   }
 
-  /**
-   * FAST_PICK_FIRST_TOKEN_SHARE of the pick's own route budget — the same
-   * budget the caller's outer deadline is built from (answerLatencyKey() and
-   * the route predicates follow the pick), so the guard always fires first and
-   * leaves the fallback the rest. A gateway's budget adapts to its measured
-   * first tokens; the guard adapts with it.
-   */
+  /** Use the full route budget; do not halve the user's 60-second wait. */
   private fastPickFirstTokenBudgetMs(pick: { modelId: string; family: FastModelFamily }): number {
     const route = this.fastPickRoute(pick.family);
     const { totalHardTimeoutMs } = require('./llm/liveDeadlines');
@@ -5832,7 +5785,7 @@ let isMultimodal = !!(imagePaths?.length);
       isLocal: route === 'local', viaServerCascade: route === 'server_cascade', isUserEndpoint: route === 'user_endpoint',
       observedUserEndpointLatency: route === 'user_endpoint' ? this.observedLatencyFor(`model:${pick.modelId}`) : null,
     });
-    return Math.round(full * FAST_PICK_FIRST_TOKEN_SHARE);
+    return full;
   }
 
   /**
@@ -6786,7 +6739,7 @@ let isMultimodal = !!(imagePaths?.length);
     // to pass by accident, and so a caller that hands us `undefined` still gets
     // the documented default. Callers doing a dense extraction — meeting notes,
     // and now the screen-understanding vision rung — pass their own bound.
-    const timeoutMs = opts?.timeoutMs ?? 8000;
+    const timeoutMs = opts?.timeoutMs ?? LLM_REQUEST_TIMEOUT_MS;
     // Overall-deadline signal covers BOTH connect AND the body read below. Without
     // a read-phase bound, a server that sends headers then hangs the body would
     // stall `response.json()` forever (the 8s fetch-signal only covers connect).
@@ -7938,9 +7891,9 @@ let isMultimodal = !!(imagePaths?.length);
     //     local endpoint — 8 CustomProviderWirePayload cases went red with
     //     "SSRF protection blocked URL (Loopback addresses are not allowed)".
 
-    // 5. Execute Fetch (30s timeout — same as RestSTT uploads)
+    // 5. Execute Fetch with the user-request timeout.
     const customAbort = new AbortController();
-    const customTimeout = setTimeout(() => customAbort.abort(), 30_000);
+    const customTimeout = setTimeout(() => customAbort.abort(), LLM_REQUEST_TIMEOUT_MS);
     try {
       const serializedBody = JSON.stringify(body);
       // markerIntegrity reports whether the template actually substituted our
@@ -13495,7 +13448,7 @@ let isMultimodal = !!(imagePaths?.length);
     // attempt instead of ~30s.
     const customConnectTimeoutMs = strictErrors
       ? (imagePaths?.length ? DIRECT_ASSIST_VISION_CONNECT_TIMEOUT_MS : DIRECT_ASSIST_CONNECT_TIMEOUT_MS)
-      : 30_000;
+      : LLM_REQUEST_TIMEOUT_MS;
     const streamTimeout = setTimeout(() => streamAbort.abort(), customConnectTimeoutMs);
     // Forward the caller's user-cancel signal into the same controller so
     // the fetch socket closes immediately on supersession, freeing the
@@ -15641,7 +15594,7 @@ let isMultimodal = !!(imagePaths?.length);
             ...(opts?.purpose ? { purpose: opts.purpose } : {}),
             ...(opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
           }),
-          opts?.timeoutMs ? opts.timeoutMs + 5000 : 10000,
+          opts?.timeoutMs ? opts.timeoutMs + 5000 : LLM_REQUEST_TIMEOUT_MS + 5000,
           'Natively Summary'
         );
         if (text.trim().length > 0) {

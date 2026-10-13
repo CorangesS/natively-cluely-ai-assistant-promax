@@ -569,8 +569,8 @@ export async function* runStreamingFallback(
         const firstNext = nextNonBlankChunk(it);
         firstNext.catch(() => { }); // swallow late rejection if the timeout wins
         let ttftTimer: ReturnType<typeof setTimeout> | null = null;
-        // Per-provider TTFT budget when set (e.g. Pro is slower), else config default.
-        const providerTtftMs = provider.ttftTimeoutMs ?? cfg.ttftTimeoutMs;
+        // Provider-specific budgets may extend, but never shorten, the configured wait.
+        const providerTtftMs = Math.max(provider.ttftTimeoutMs ?? 0, cfg.ttftTimeoutMs);
         const ttft = new Promise<never>((_, rej) => {
           ttftTimer = setTimeout(() => { try { ctrl.abort(); } catch { } rej(new Error('ttft-timeout')); }, providerTtftMs);
         });

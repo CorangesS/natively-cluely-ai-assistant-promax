@@ -12,7 +12,6 @@ import MeetingDetails from './MeetingDetails';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
 import { motion, AnimatePresence, useReducedMotion, type TargetAndTransition, type Variants } from 'framer-motion';
-import { FeatureSpotlight } from './FeatureSpotlight';
 import './LauncherCta.css';
 import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -1184,16 +1183,8 @@ const Launcher: React.FC<LauncherProps> = ({ request, onStartMeeting, onOpenSett
                                         </button>
                                     </div>
 
-                                    {/* 2. Hero Section Cards */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
-                                        {/* Default Intro — natively support & upcoming features.
-                                            Calendar "Up Next" lives in Settings → Calendar, not here. */}
-                                        <div className="md:col-span-2 h-full">
-                                            <FeatureSpotlight />
-                                        </div>
-
-
-
+                                    {/* Calendar is the only home card; no promotional carousel. */}
+                                    <div className="grid grid-cols-1 gap-3 h-[198px]">
                                         {/* Right Secondary Card — violet-tinted, "Calendar Connected" + peeking next meeting */}
                                         <UpcomingCalendarCard
                                             className="md:col-span-1"

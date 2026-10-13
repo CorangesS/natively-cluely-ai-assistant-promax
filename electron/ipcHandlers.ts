@@ -4893,6 +4893,9 @@ export function initializeIpcHandlers(appState: AppState): void {
           const { StreamingSpecStripper } = require('./llm/codingContract') as typeof import('./llm/codingContract');
           const chatSpecStripper = isCodingChat ? new StreamingSpecStripper() : null;
           const sendChunk = (chunk: string) => {
+            // Buffered coding/repair output must still belong to this sender's
+            // active request when it is flushed, not just when it was read.
+            if (_chatStreamsBySender.get(senderId)?.streamId !== myStreamId) return;
             const visible = chatSpecStripper ? chatSpecStripper.push(chunk) : chunk;
             if (!visible) return;
             // Carry the stream id (audit finding #3) as an optional 2nd arg so the

@@ -231,9 +231,9 @@ export const PlansSettings: React.FC<PlansSettingsProps> = ({
             This tab already animates; it does not need the generic cascade. */}
         <div className="space-y-6 animated fadeIn">
             <header>
-                <h2 className="text-[17px] font-semibold text-text-primary tracking-[-0.015em]">{t('Plans & Billing')}</h2>
+                <h2 className="text-[17px] font-semibold text-text-primary tracking-[-0.015em]">{t('Account')}</h2>
                 <p className="text-[12px] text-text-secondary leading-relaxed mt-1.5">
-                    {t('Natively API covers AI, knowledge, voice, and research. Pro, Max, and Ultra include the Pro app license at no extra cost. You can also buy Pro on its own if you prefer to use your own AI keys.')}
+                    {t('Manage your API key, license, and usage.')}
                 </p>
             </header>
 
@@ -272,34 +272,7 @@ export const PlansSettings: React.FC<PlansSettingsProps> = ({
                 independently and asynchronously, so a banner rendered here could
                 briefly disagree with the card rendered there mid-fetch. */}
 
-            {/* Second in the arrival sequence when the API key is removed: the
-                app-only licence becomes relevant again the moment the
-                subscription that bundled it is gone. One BEAT after the plan
-                chooser above, so the two read as a sequence rather than as one
-                simultaneous reflow. */}
-            <AnimatePresence mode="popLayout" initial={false}>
-                {!isPremium && (
-                    <motion.div
-                        key="pro-section"
-                        layout="position"
-                        style={{ width: '100%', contain: 'layout' }}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={reduceMotion ? { opacity: 0, transition: { duration: INK.out } } : { opacity: 0, scale: 0.985 }}
-                        transition={
-                            reduceMotion
-                                ? { layout: { duration: 0 }, default: { duration: INK.in, delay: BEAT } }
-                                : {
-                                    layout: { duration: SETTLE.remove, ease: EASE_ENTER },
-                                    opacity: { duration: INK.in, ease: EASE_ENTER, delay: BEAT },
-                                    default: { duration: INK.out, ease: EASE_LEAVE },
-                                }
-                        }
-                    >
-                        {proSection}
-                    </motion.div>
-                )}
-            </AnimatePresence>
+
 
             {/* Renders last, below the app-only-license section. It used to live
                 at the tail of NativelyApiSettings, which pinned it *above* the

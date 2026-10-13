@@ -114,14 +114,13 @@ function fastHooks(extra = {}) {
 
 // ════════════════════════════════════════════════════════════════════════════
 describe('DEFAULT_TEXT_FALLBACK_CONFIG', () => {
-  test('has a tight TTFT budget tuned for text first-token', () => {
-    assert.ok(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs <= 3_000,
-      `text TTFT budget should be tight (<=3s), got ${DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs}`);
-    assert.ok(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs < DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs,
-      'TTFT budget must be smaller than the mid-stream stall budget');
+  test('allows 60 seconds for the first text token', () => {
+    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs, 60_000);
+    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.ttftTimeoutMs, DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs,
+      'first-token and mid-stream waits both allow a full minute');
   });
   test('keeps a generous inter-chunk budget so long answers are not cut off', () => {
-    assert.ok(DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs >= 15_000);
+    assert.equal(DEFAULT_TEXT_FALLBACK_CONFIG.interChunkTimeoutMs, 60_000);
   });
   test('orderTextByHealth is exported and orders fastest-first', () => {
     const health = new Map([

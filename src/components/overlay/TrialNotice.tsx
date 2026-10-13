@@ -30,8 +30,7 @@ import './TrialNotice.css';
 export const TrialNoticeBanner: React.FC<{ trial: OverlayTrial }> = ({ trial }) => {
   const t = useT();
   const ownKeys = <OverlayBannerButton onClick={trial.useOwnKeys}>{t('Use my own keys')}</OverlayBannerButton>;
-  const plans = <OverlayBannerButton variant="primary" onClick={trial.seePlans}>{t('See plans')}</OverlayBannerButton>;
-  const keepGoing = t('Pick a plan or add your own keys to keep getting answers.');
+  const keepGoing = t('Add your own API keys to keep getting answers.');
 
   switch (trial.banner) {
     case 'started':
@@ -55,7 +54,7 @@ export const TrialNoticeBanner: React.FC<{ trial: OverlayTrial }> = ({ trial }) 
           icon={<Timer strokeWidth={2.2} />}
           title={t('Free trial is almost over')}
           message={keepGoing}
-          actions={<>{plans}{ownKeys}</>}
+          actions={<>{ownKeys}</>}
         />
       );
     case 'ended':
@@ -66,7 +65,7 @@ export const TrialNoticeBanner: React.FC<{ trial: OverlayTrial }> = ({ trial }) 
           icon={<TimerOff strokeWidth={2.2} />}
           title={t('Free trial ended')}
           message={keepGoing}
-          actions={<>{plans}{ownKeys}</>}
+          actions={<>{ownKeys}</>}
         />
       );
     case 'failed': {

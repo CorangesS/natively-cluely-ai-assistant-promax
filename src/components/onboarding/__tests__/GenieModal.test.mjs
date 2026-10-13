@@ -289,8 +289,6 @@ const POPUPS = {
   'components/SettingsOverlay.tsx': 'Settings',
   'components/UpdateModal.tsx': 'Update',
   'components/ReviewModal.tsx': 'Review',
-  'components/SupportToaster.tsx': 'Support',
-  'components/trial/FreeTrialModal.tsx': 'Trial ended',
   'components/NativelyQuotaBanner.tsx': 'Quota notice',
   'components/HindsightStatusBanner.tsx': 'Long-term memory notice',
   // ProviderChangeNotice left the genie on 2026-09-25 by request: it slides in
@@ -325,8 +323,7 @@ test('onboarding toasters resume once a closing Settings / manager card has gone
 });
 
 test('popups the host unmounts on dismiss report from onClosed, not before the genie', () => {
-  for (const file of ['components/SupportToaster.tsx',
-    'components/ReviewModal.tsx', 'components/trial/FreeTrialModal.tsx']) {
+  for (const file of ['components/ReviewModal.tsx']) {
     assert.ok(code(file).includes('onClosed='), file);
   }
 });
@@ -525,7 +522,6 @@ test('pictures: a card whose content is new each time keeps none', () => {
   // A see-through (Liquid Glass) card keeps none either: a picture bakes in the
   // backdrop from when it was taken, so the next open would pour out a stale one.
   assert.ok(code('components/HindsightStatusBanner.tsx').includes('keepPictures={false}'), 'long-term memory notice (glass)');
-  assert.ok(code('components/trial/FreeTrialModal.tsx').includes('keepPictures={false}'), 'trial usage');
 });
 
 test('pictures: a card showing one of several things is keyed by which', () => {

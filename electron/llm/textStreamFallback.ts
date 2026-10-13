@@ -1,3 +1,4 @@
+import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
 // electron/llm/textStreamFallback.ts
 //
 // Text-streaming provider fallback — the text-path twin of the vision fallback.
@@ -43,8 +44,8 @@ export type TextFallbackHooks = VisionFallbackHooks;
  * provider than keep the user waiting. interChunkTimeout stays generous so a
  * long, correct answer mid-stream is never cut off.
  *
- *   ttftTimeoutMs: 2_500   — primary must produce a token in 2.5s or we fail over
- *   interChunkTimeoutMs: 20_000 — only abort a committed stream if it goes silent 20s
+ *   ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS — allow 60s for the first token
+ *   interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS — allow 60s of silence after output
  *   maxAttempts: 2         — per provider (tier retry); the chain has many providers
  */
 export const DEFAULT_TEXT_FALLBACK_CONFIG: VisionFallbackConfig = {
@@ -57,8 +58,8 @@ export const DEFAULT_TEXT_FALLBACK_CONFIG: VisionFallbackConfig = {
   // user-visible behavior change and out of scope for a pure extraction.
   logPrefix: 'Vision',
   maxAttempts: 2,
-  ttftTimeoutMs: 2_500,
-  interChunkTimeoutMs: 20_000,
+  ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
+  interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
   authCooldownMs: 300_000,
   transientCooldownMs: 30_000,
   incompatibleCooldownMs: 600_000,

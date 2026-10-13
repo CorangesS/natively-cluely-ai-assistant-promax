@@ -1,3 +1,4 @@
+import { LLM_REQUEST_TIMEOUT_MS } from './requestTimeout';
 /**
  * Vision-flavoured binding of the shared fallback engine.
  *
@@ -39,8 +40,8 @@ export const DEFAULT_VISION_FALLBACK_CONFIG: FallbackConfig = {
   // too aggressive and aborted healthy first tokens on screenshots — especially
   // multi-screenshot requests. 20s base; per-provider overrides bump Pro higher
   // and the call site scales with image count.
-  ttftTimeoutMs: 20_000,
-  interChunkTimeoutMs: 15_000,
+  ttftTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
+  interChunkTimeoutMs: LLM_REQUEST_TIMEOUT_MS,
   authCooldownMs: 300_000,
   transientCooldownMs: 30_000,
   incompatibleCooldownMs: 600_000,

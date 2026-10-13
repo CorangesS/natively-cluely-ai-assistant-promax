@@ -624,7 +624,8 @@ You explicitly control:
 
 - Node.js (v22.13+ required)
 - Git
-- Rust (required for native audio capture)
+- Windows x64: Python 3 and Visual Studio 2022 Build Tools with Desktop development with C++ (see the Windows guide below)
+- Rust (required for native audio capture; use the MSVC toolchain on Windows)
 - Xcode 26+ with the macOS 26 SDK (required only to build the Apple Speech helper or package Natively for macOS)
 
 ### AI Credentials & Speech Providers
@@ -698,77 +699,137 @@ Setup Summary:
 
 ## Development Setup
 
-### Clone the Repository
+### 本分支的界面与超时调整
 
-```bash
-git clone https://github.com/Natively-AI-assistant/natively-cluely-ai-assistant.git
-cd natively-cluely-ai-assistant
+本分支移除了启动页推广轮播、推广弹窗、捐赠/评价引导、合作推广链接参数和套餐购买入口。设置保留 API Key、用量、已有许可证管理，以及必要的权限和额度状态提示。
+
+交互式 LLM 请求的连接、首段有效输出和流中无输出等待均调整为 **60 秒**，公共常量位于 [`electron/llm/requestTimeout.ts`](electron/llm/requestTimeout.ts)。这不是整条回答的 60 秒总时长限制：持续输出的回答可以超过一分钟。后台分类、下载等任务保留各自的超时；服务商或代理自身的超时仍可能先触发。
+
+消息仍按 `streamId` / `requestId` 隔离；新请求取代旧请求后，旧请求迟到的 token 和超时回调会被丢弃。`raceStreamWithDeadline` 在等待返回后再次检查归属，手动聊天发送 token 前也检查当前请求，避免旧回答混入新回答。
+
+### Windows x64 构建指南
+
+以下命令在 **Windows 原生 PowerShell** 中运行，项目当前配置产出 x64 的 NSIS 安装包和 portable 程序。不要复用 macOS/Linux 的 `node_modules`、`dist-electron` 或 Rust `.node` 产物；本指南不使用 WSL 或跨平台打包。每条命令成功后再执行下一条，失败时先处理错误。
+
+#### 1. 安装工具链
+
+- Node.js **22.13 或更高版本的 x64 版**，包含 npm；建议先使用 Node 22，和项目 CI 的版本一致。
+- Git for Windows。
+- Python 3（例如 3.12），安装 Python Launcher，使 `py` 可用。
+- Visual Studio 2022 Build Tools，选择 **Desktop development with C++ / 使用 C++ 的桌面开发**，包含 MSVC v143 x64/x86 构建工具和 Windows 10/11 SDK。原生 Node 模块的要求见 [node-gyp Windows 官方说明](https://github.com/nodejs/node-gyp#on-windows)。
+- 通过 [rustup 官方安装程序](https://rust-lang.org/tools/install/) 安装 Rust，使用 **`stable-x86_64-pc-windows-msvc`** 工具链，不能用 GNU 工具链替代本指南的 MSVC 配置。可参考 [微软的 Windows Rust 环境说明](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup)。
+
+安装后重新打开 PowerShell，检查：
+
+```powershell
+node --version
+node -p "process.platform + ' ' + process.arch"
+npm.cmd --version
+git --version
+py --version
+rustc --version
+cargo --version
+rustup show active-toolchain
 ```
 
-### Install Dependencies
+第二条应输出 `win32 x64`。本文使用 `npm.cmd`，避免 PowerShell 因 `npm.ps1` 执行策略拦截命令，无需修改系统执行策略。构建过程中还需要联网下载 npm、Electron、Cargo 依赖和语音模型资源。
 
-```bash
-npm install
+#### 2. 获取源码及私有子模块
+
+```powershell
+git clone https://github.com/CorangesS/natively-cluely-ai-assistant-promax.git
+cd natively-cluely-ai-assistant-promax
+git submodule update --init --recursive -- premium
+Test-Path premium/electron/knowledge/CompanyResearchEngine.ts
 ```
 
-### Build Native Audio Module (Rust)
+**完整开发运行和安装包构建目前仍依赖私有 `premium` 子模块**（地址见 [`.gitmodules`](.gitmodules)）。你需要该仓库的读取权限，最后一条应返回 `True`。移除广告界面没有移除主进程的私有功能依赖；如果出现 `Repository not found` / `Authentication failed`，不能靠重装 npm 解决，需要先取得该子模块权限。桌面客户端构建不需要初始化另一个 `natively-api` 服务端子模块。
 
-```bash
-npm run build:native
+只有公开源码、没有私有子模块权限时，可执行后面的“核心编译检查”，但不能将其结果当成可运行的完整应用。
+
+#### 3. 安装依赖并配置环境
+
+```powershell
+npm.cmd ci
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-### Build Apple Speech Helper (macOS Only)
+正常开发/打包不要加 `--ignore-scripts` 或 `--omit=optional`。`postinstall` 会处理 Electron 原生依赖、下载本地模型并准备 SQLite 扩展；第一次安装可能较久。API Key 可以在应用设置里填写，源码编译本身不要求填写 LLM API Key。`.env` 只用于本机配置，不要提交实际密钥。
 
-Regular development and non-macOS builds do not require the helper. To use Apple Speech while developing on macOS, build it explicitly for the current target architecture:
+#### 4. 开发运行
 
-```bash
-npm run build:apple-speech -- --arch arm64
+```powershell
+npm.cmd run build:native
+npm.cmd start
 ```
 
-Use `x64` for Intel or `universal` to combine both architectures. This command requires Xcode 26+ with the macOS 26 SDK. Production macOS packaging builds the matching helper automatically.
+前者用 Rust 构建 Windows 音频模块，后者启动 Vite 和 Electron。Windows 不需要 Apple Speech helper，也不需要 Xcode。若原生模块出现 `NODE_MODULE_VERSION` / `ERR_DLOPEN_FAILED`，先关闭自己启动的应用，再运行 `npm.cmd run rebuild:native`。
 
-### Environment Variables
+#### 5. 构建本地可运行目录（不生成安装包）
 
-Create a `.env` file:
+已完成依赖安装且有 `premium` 源码时：
 
-```env
-# Cloud AI
-GEMINI_API_KEY=your_key
-GROQ_API_KEY=your_key
-OPENAI_API_KEY=your_key
-CLAUDE_API_KEY=your_key
-GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
-
-# Speech Providers (Optional - only one needed)
-DEEPGRAM_API_KEY=your_key
-ELEVENLABS_API_KEY=your_key
-AZURE_SPEECH_KEY=your_key
-AZURE_SPEECH_REGION=eastus
-IBM_WATSON_API_KEY=your_key
-IBM_WATSON_REGION=us-south
-
-# Local AI (Ollama)
-USE_OLLAMA=true
-OLLAMA_MODEL=llama3.2
-OLLAMA_URL=http://localhost:11434
-
-# Default Model Configuration
-DEFAULT_MODEL=gemini-3.1-flash-lite-preview
+```powershell
+npm.cmd run app:build -- --win --x64 --dir --publish never
 ```
 
-### Run (Development)
+该脚本按顺序执行前端构建、Electron 类型检查及编译、Rust 模块构建、本地资源校验，再调用 electron-builder。输出目录为 `release\win-unpacked`，入口通常是 `release\win-unpacked\audiodg.exe`。`audiodg` 是项目现有的 Windows 可执行文件配置名，位于构建目录内。
 
-```bash
-npm start
+`--dir` 模式允许缺少 Google Calendar client secret，仅输出日历不可用的警告；这适合先验证聊天、界面和音频功能。`--publish never` 表示只在本地生成产物，不上传 release。
+
+#### 6. 构建 NSIS 安装包与 portable 程序
+
+**当前打包脚本会拒绝生成缺少日历凭据的安装包，即使你不使用日历功能。** 这是已有的构建门禁，见 [`scripts/lib/calendar-client-secret.cjs`](scripts/lib/calendar-client-secret.cjs)。需要在构建前通过本地 `.env` 或环境变量提供有效、匹配的 Google Calendar OAuth 凭据：
+
+```dotenv
+GOOGLE_CALENDAR_CLIENT_ID=your-own-google-oauth-client-id
+GOOGLE_CALENDAR_CLIENT_SECRET=your-own-google-oauth-client-secret
 ```
 
-### Build (Production)
+注意：现有构建器会把 **client secret** 写入 Electron bundle，但 **client ID** 仍从运行时环境或 [`electron/services/CalendarManager.ts`](electron/services/CalendarManager.ts) 的 `DEFAULT_CALENDAR_CLIENT_ID` 读取。使用自己的 OAuth 应用制作分发包时，还需要将该默认 ID 改为自己的公开 client ID；仅在构建机器 `.env` 设置 ID 不会自动把它写入安装包。桌面应用内嵌的 OAuth client secret 不应视为能够对安装者保密的服务端密钥。
 
-```bash
-npm run dist
+然后运行（设置凭据后要重新编译，不能只重复打包旧 bundle）：
+
+```powershell
+npm.cmd run app:build -- --win --x64 --publish never
 ```
 
-This runs: Vite build → TypeScript compile → native module build → electron-builder
+完成后查看 `release` 目录，包含 NSIS `*-Setup-*.exe` 和 portable `.exe`。正常的 `npm.cmd run dist` 也会走 `app:build`，这里显式指定 Windows、x64 和不发布。不要使用 `dist:signed`，该脚本用于本项目的 macOS 公证/上传流程。
+
+没有日历凭据时，请先使用第 5 步的未打包目录；不要填写占位假密钥来冒充可用的安装包。Windows 分发签名需另外配置，以上命令不承诺产出已签名程序。
+
+#### 7. 只有公开源码时：核心编译检查
+
+缺少 `premium` 权限时，以下流程可检查当前修改的类型、前端和核心 Electron 代码。这里有意不执行依赖安装脚本；**它不安装完整运行环境、不启动 Electron，也不证明 Windows 安装包可用**。之后要完整运行，应取得子模块权限并重新执行正常的 `npm.cmd ci`。
+
+```powershell
+npm.cmd ci --ignore-scripts
+npm.cmd run typecheck:ts7
+npm.cmd run typecheck:electron
+npm.cmd run build
+npm.cmd run build:electron:core-smoke
+node --test electron/llm/__tests__/SixtySecondRequestTimeout.test.mjs electron/llm/__tests__/LiveDeadlines.test.mjs electron/services/__tests__/ChatStreamGuard.test.mjs
+node --test src/components/__tests__/CleanInterface.test.mjs
+```
+
+`build:electron:core-smoke` 把缺少的私有模块标为 external，仅用于编译/测试。不要将这种产物用于启动或打包。`npm run build` 会清理 `dist-electron`，所以核心 Electron 编译必须放在它之后。
+
+#### 常见构建问题
+
+| 错误或现象 | 处理方式 |
+| --- | --- |
+| 缺少 `premium/...` 模块 | 检查私有仓库权限和第 2 步子模块状态；公开源码使用第 7 步检查流程。 |
+| 找不到 Python、MSBuild、MSVC 或 `link.exe` | 检查第 1 步的 C++ 工作负载及 Windows SDK，重开终端；必要时使用 VS 的 Developer PowerShell。 |
+| Electron、Cargo 或模型下载失败 | 检查对相应下载源的网络访问后重试，勿跳过模型资源校验来制作安装包。 |
+| 本地模型资源校验失败 | 执行 `node scripts/download-models.js` 后再运行 `npm.cmd run verify:packaged-local-assets`。 |
+| 原生 `.node` 架构或 ABI 不匹配 | 确认 `win32 x64`，在 Windows 重新 `npm.cmd ci` 和 `npm.cmd run build:native`；不要复制其他系统的依赖。 |
+| `[package-app] Refusing to package`，提到 calendar | 按第 6 步配置匹配凭据并重新构建，或使用第 5 步 `--dir` 本地验证。 |
+
+本次改动已在 macOS 完成类型检查、前端构建、核心 Electron 编译和相关回归测试；**尚未在 Windows 实机完成安装包构建与运行验收**。Windows 验收应覆盖安装/启动、发送与取消、连续提问、59 秒后返回首段内容、长回答，以及麦克风/系统音频采集。
+
+### macOS 开发补充
+
+同样先准备私有子模块和 `npm ci`，再运行 `npm run build:native`、`npm start`。只有需要 Apple Speech 时才额外运行 `npm run build:apple-speech -- --arch arm64`（Intel 用 `x64`）；该 helper 及 macOS 打包需要 Xcode 26+ 和 macOS 26 SDK。
 
 ---
 
