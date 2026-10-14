@@ -54,6 +54,7 @@ export class LANBindConfirmationRequired extends Error {
 }
 
 export type StreamEvent =
+  | { type: 'screenshot-settings'; prompt: string; defaultPrompt: string }
   | { type: 'history'; messages: PersistedMessage[] }
   | { type: 'user'; id: string; content: string; createdAt: string; awaiting?: boolean }
   | { type: 'token'; streamId: string; token: string }
@@ -152,6 +153,8 @@ interface PersistedMessage {
 /** Markdown → the page's HTML (+ the [[GIST]] line split off). See phoneMirrorMarkdown.ts. */
 export type PhoneAnswerRenderer = (markdown: string, opts?: { streaming?: boolean }) => { html: string; gist: string | null };
 
+export const DEFAULT_SCREENSHOT_PROMPT = '请根据当前电脑屏幕截图分析并回答其中的问题。';
+const SCREENSHOT_PROMPT_MAX = 2000;
 const DEFAULT_PORT = 4123;
 const PORT_PROBE_RANGE = 12;
 const HISTORY_LIMIT = 40;
@@ -1873,12 +1876,18 @@ export class PhoneMirrorService {
     });
   }
 
+  private screenshotSettings(): Extract<StreamEvent, { type: 'screenshot-settings' }> {
+    const saved = SettingsManager.getInstance().get('phoneMirrorScreenshotPrompt');
+    return { type: 'screenshot-settings', prompt: (typeof saved === 'string' && saved.trim()) || DEFAULT_SCREENSHOT_PROMPT, defaultPrompt: DEFAULT_SCREENSHOT_PROMPT };
+  }
+
   private handleWsConnection(ws: WebSocket, req: http.IncomingMessage): void {
     // Send recent history immediately so a phone joining mid-session has context.
     try {
       const replay = this.history
         .slice(-HISTORY_LIMIT)
         .map((m) => (m.role === 'user' && this.awaitingAnswers.has(m.id.slice(2)) ? { ...m, awaiting: true } : m));
+      ws.send(JSON.stringify(this.screenshotSettings()));
       ws.send(JSON.stringify({ type: 'history', messages: replay }));
       // Replay in-flight partial as a SINGLE token frame containing the full
       // accumulated content so far.  Previously this sent one frame per token
@@ -1951,9 +1960,8 @@ export class PhoneMirrorService {
     ws.on('message', (data: any) => {
       try {
         const raw = typeof data === 'string' ? data : (data as Buffer).toString('utf8');
-        // Guard oversized payloads. An extension's `tabs` reply lists every open
-        // tab, which passes 4 KB at about 20 tabs, so its sockets get more room.
-        if (raw.length > (this.extTokenSockets.has(ws) ? 65_536 : 4096)) return;
+        // Allow JSON-escaped 2000-character drafts; extension tab lists need more room.
+        if (raw.length > (this.extTokenSockets.has(ws) ? 65_536 : 16_384)) return;
         const cmd = JSON.parse(raw) as unknown;
         if (!cmd || typeof cmd !== 'object') return;
         const c = cmd as Record<string, unknown>;
@@ -1962,6 +1970,27 @@ export class PhoneMirrorService {
         // fall through to the phone-command path. handleExtensionFrame returns
         // true when it consumed the frame.
         if (this.handleExtensionFrame(ws, c)) return;
+
+        // Settings remain on the desktop. Only acknowledge a durable write.
+        if (c.type === 'save-screenshot-prompt') {
+          if (typeof c.requestId !== 'string' || c.requestId.length > 80) return;
+          const valid = typeof c.prompt === 'string' && c.prompt.trim().length > 0 && c.prompt.length <= SCREENSHOT_PROMPT_MAX;
+          const ok = valid && SettingsManager.getInstance().set('phoneMirrorScreenshotPrompt', (c.prompt as string).trim());
+          ws.send(JSON.stringify({ type: 'screenshot-settings-saved', requestId: c.requestId, ok,
+            message: ok ? '已保存到电脑软件' : valid ? '保存失败，请检查电脑端设置文件是否可写' : '提示词需为 1–2000 个字符' }));
+          if (ok) this.broadcast(this.screenshotSettings());
+          return;
+        }
+        if (c.type === 'capture-and-send') {
+          if (typeof c.message !== 'string' || c.message.length > 2000 ||
+              typeof c.requestId !== 'string' || !/^[a-zA-Z0-9:_-]{1,80}$/.test(c.requestId)) return;
+          // Resolve once before capture or LLM work; edits during a response affect the next request.
+          const extra = c.message.trim();
+          const message = this.screenshotSettings().prompt + (extra ? '\n\n本次补充要求：\n' + extra : '');
+          ws.send(JSON.stringify({ type: 'capture-accepted', requestId: c.requestId, message }));
+          this.emitPhoneCommand({ type: 'chat', message, captureScreen: true });
+          return;
+        }
 
         let validated: PhoneCommand | null = null;
         if (

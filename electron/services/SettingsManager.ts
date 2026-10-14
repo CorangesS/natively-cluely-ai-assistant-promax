@@ -100,6 +100,7 @@ export interface AppSettings {
     // HindsightManager.hindsightMemoryExplicitlyOff()).
     hindsightMemoryEnabledExplicit?: boolean;
     knowledgeMode?: boolean;
+    phoneMirrorScreenshotPrompt?: string;
     phoneMirrorEnabled?: boolean;
     phoneMirrorExposeOnLan?: boolean;
     // External optional provider. Default false: do not spawn Ollama unless

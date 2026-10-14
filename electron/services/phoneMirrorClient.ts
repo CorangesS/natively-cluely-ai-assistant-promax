@@ -827,6 +827,31 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         padding: 6px 0 max(10px, calc(var(--safe-bottom) + 2px));
       }
       .dock-inner { max-width: 720px; margin: 0 auto; }
+      .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px var(--gr) 8px var(--gl); }
+      .primary-action { min-height: 48px; padding: 10px 8px; border-radius: 14px; font-size: 16px; font-weight: 650; color: var(--label); background: var(--card); border: 1px solid var(--hair); }
+      .primary-action.capture { color: #fff; background: var(--accent-fill); border-color: transparent; }
+      .primary-action:disabled { opacity: 0.45; cursor: default; }
+      .primary-action:active { transform: scale(0.98); }
+      .secondary-actions { display: flex; align-items: center; gap: 8px; padding: 0 var(--gr) 0 var(--gl); }
+      .secondary-actions > button, .more-actions summary { min-height: 44px; padding: 4px; font-size: 13px; color: var(--label-2); }
+      .secondary-actions > button:disabled { opacity: 0.4; }
+      #editScreenshotPrompt { margin-right: auto; text-align: left; color: var(--accent); }
+      .more-actions { position: relative; }
+      .more-actions summary { cursor: pointer; display: flex; align-items: center; white-space: nowrap; }
+      .more-actions .chips { position: absolute; bottom: 100%; right: 0; width: 210px; max-height: 45dvh; overflow-y: auto; display: flex; flex-direction: column; padding: 10px; background: var(--menu-bg); border: 1px solid var(--hair); border-radius: 14px; box-shadow: 0 6px 24px #0002; mask-image: none; -webkit-mask-image: none; }
+      .more-actions .chip { flex-shrink: 0; min-height: 44px; text-align: left; padding: 8px 12px; }
+      .more-actions:not([open]) .chips { display: none; }
+      .prompt-dialog { width: min(520px, calc(100vw - 32px)); max-height: 85dvh; overflow-y: auto; margin: auto; border: 1px solid var(--hair); border-radius: 20px; padding: 24px; background: var(--bg); color: var(--label); box-sizing: border-box; }
+      .prompt-dialog::backdrop { background: #0007; }
+      .prompt-dialog h2 { font-size: 20px; margin: 0 0 10px; }
+      .prompt-dialog p { font-size: 14px; line-height: 1.5; color: var(--label-2); }
+      .prompt-dialog textarea { display: block; box-sizing: border-box; width: 100%; min-height: 160px; max-height: 35dvh; resize: vertical; padding: 12px; font: inherit; font-size: 16px; line-height: 1.5; border: 1px solid var(--hair); border-radius: 12px; background: var(--card); color: var(--label); }
+      .prompt-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; margin-top: 12px; }
+      .prompt-dialog footer button { min-height: 44px; padding: 8px 12px; border-radius: 10px; color: var(--label); background: var(--fill-1); }
+      .prompt-dialog #saveScreenshotPrompt { background: var(--accent-fill); color: #fff; }
+      .prompt-dialog button:disabled { opacity: 0.45; }
+      .prompt-dialog #promptSaveStatus { min-height: 21px; }
+
       .chips {
         display: flex;
         gap: var(--s2);
@@ -1275,7 +1300,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         .send { margin: 4px 4px 4px 0; }
       }
       /* Keyboard up on a short screen: the chips give their row to the text. */
-      .app.is-short.kb-up .chips, .app.is-short.kb-up .tray-wrap { display: none; }
+      .app.is-short.kb-up .tray-wrap { display: none; }
 
       /* ── Accessibility preferences ──────────────────────── */
       @media (prefers-reduced-motion: reduce) {
@@ -1380,16 +1405,9 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
               </div>
             </div>
           </div>
-          <div class="chips" id="chips" role="toolbar" aria-label="Ask your desktop">
-            <button class="chip is-primary" type="button" id="captureSendBtn">截图并发送</button>
-            <button class="chip" type="button" id="stopPhoneBtn">停止回答</button>
-            <button class="chip" type="button" data-action="whatToAnswer" data-needs-meeting>What to Say</button>
-            <button class="chip" type="button" data-action="answer">Answer</button>
-            <button class="chip" type="button" data-action="followUp" data-needs-meeting>Follow Up</button>
-            <button class="chip" type="button" data-action="clarify" data-needs-meeting>Clarify</button>
-            <button class="chip" type="button" data-action="codeHint">Code Hint</button>
-            <button class="chip" type="button" data-action="brainstorm">Brainstorm</button>
-            <button class="chip" type="button" data-action="recap" data-needs-meeting>Recap</button>
+          <div class="primary-actions" role="toolbar" aria-label="主要操作">
+            <button class="primary-action capture" type="button" id="captureSendBtn">截图并发送</button>
+            <button class="primary-action" type="button" id="clearScreenBtn" title="只清除当前网页显示，保留正在输出的回答">清空当前屏幕</button>
           </div>
           <div class="composer">
             <button class="icon-btn t-icon-swap" id="captureBtn" type="button" data-state="a" aria-label="Capture your computer's screen for the next answer">
@@ -1410,6 +1428,22 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
               </button>
             </div>
           </div>
+          <div class="secondary-actions">
+            <button type="button" id="editScreenshotPrompt">截图提示词 · 编辑</button>
+            <button type="button" id="stopPhoneBtn" disabled>停止回答</button>
+            <details class="more-actions" id="moreActions">
+              <summary>更多操作</summary>
+          <div class="chips" id="chips" role="toolbar" aria-label="Ask your desktop">
+            <button class="chip" type="button" data-action="whatToAnswer" data-needs-meeting>What to Say</button>
+            <button class="chip" type="button" data-action="answer">Answer</button>
+            <button class="chip" type="button" data-action="followUp" data-needs-meeting>Follow Up</button>
+            <button class="chip" type="button" data-action="clarify" data-needs-meeting>Clarify</button>
+            <button class="chip" type="button" data-action="codeHint">Code Hint</button>
+            <button class="chip" type="button" data-action="brainstorm">Brainstorm</button>
+            <button class="chip" type="button" data-action="recap" data-needs-meeting>Recap</button>
+          </div>
+            </details>
+          </div>
         </div>
       </footer>
 
@@ -1427,13 +1461,21 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
           Copy transcript
         </button>
-        <div class="menu-sep"></div>
-        <button class="menu-item is-danger" type="button" role="menuitem" data-menu="clear">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M9.5 7V5.5a1.5 1.5 0 0 1 1.5-1.5h2a1.5 1.5 0 0 1 1.5 1.5V7"/></svg>
-          Clear this screen
-        </button>
-        <p class="menu-note">Clearing only affects this phone.</p>
+
       </div>
+
+      <dialog class="prompt-dialog" id="screenshotPromptDialog" aria-labelledby="promptTitle">
+        <h2 id="promptTitle">截图提示词</h2>
+        <p>保存到电脑软件，所有设备共用。输入框中的文字会作为本次截图的补充要求。</p>
+        <label class="sr-only" for="screenshotPromptInput">截图提示词内容</label>
+        <textarea id="screenshotPromptInput" maxlength="2000" placeholder="填写截图时发送给模型的要求"></textarea>
+        <p id="promptSaveStatus" role="status" aria-live="polite"></p>
+        <footer>
+          <button type="button" id="resetScreenshotPrompt">恢复默认</button>
+          <button type="button" id="closeScreenshotPrompt">关闭</button>
+          <button type="button" id="saveScreenshotPrompt">保存到软件</button>
+        </footer>
+      </dialog>
 
       <div class="lock" id="lock" hidden>
         <div class="lock-card">
@@ -2429,6 +2471,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           pinned = true;
           stick();
           entry.timer = setTimeout(function () { expirePending(entry); }, PENDING_TIMEOUT_MS);
+          paintControls();
           return entry;
         }
         function takePending(match) {
@@ -2442,6 +2485,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           if (entries.indexOf(entry) < 0) return;
           var idle = { key: entry.key + ':idle', t: entry.t, kind: 'assistant', label: entry.label, content: 'Nothing came back from your desktop for this one.', local: true, idle: true };
           morph(entry, idle);
+          paintControls();
           idle.el.classList.add('is-idle');
           idle.el.querySelector('.answer-foot').remove();
           setTimeout(function () { removeEntry(idle, true); }, 7000);
@@ -2496,6 +2540,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         function awaitingEntry(streamId, t) {
           var entry = { key: 'p:' + streamId, t: t, kind: 'pending', action: 'desktop', streamId: streamId, label: '', local: true };
           entry.timer = setTimeout(function () { expirePending(entry); }, PENDING_TIMEOUT_MS);
+          paintControls();
           return entry;
         }
         // The placeholder this answer resolves: its own (a desktop question's,
@@ -2755,6 +2800,28 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         function handleEvent(ev) {
           if (!ev || typeof ev !== 'object') return;
           switch (ev.type) {
+            case 'screenshot-settings':
+              screenshotPrompt = ev.prompt;
+              defaultScreenshotPrompt = ev.defaultPrompt;
+              promptReady = true;
+              if (!promptDirty && !promptSaveId) promptInput.value = screenshotPrompt;
+              paintControls();
+              break;
+            case 'screenshot-settings-saved':
+              if (ev.requestId !== promptSaveId) break;
+              clearTimeout(promptSaveTimer);
+              promptSaveId = null;
+              if (ev.ok) promptDirty = false;
+              promptStatus.textContent = ev.message;
+              paintControls();
+              break;
+            case 'capture-accepted':
+              var sent = entries.find(function (e) { return e.requestId === ev.requestId && e.state; });
+              if (sent) {
+                sent.content = String(ev.message);
+                if (sent.el) sent.el.querySelector('.bubble').textContent = sent.content;
+              }
+              break;
             case 'history': onHistory(ev.messages); break;
             case 'user': onUser(ev); break;
             case 'token': onToken(String(ev.streamId), String(ev.token || '')); break;
@@ -2771,6 +2838,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
             case 'images': onImages(ev); break;
             default: break;
           }
+          paintControls();
         }
 
         // ───── Live transcript ────────────────────────────────────────────
@@ -3160,6 +3228,14 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         function setConn(next) {
           if (next === conn) return;
           conn = next;
+          if (next !== 'live') {
+            promptReady = false;
+            if (promptSaveId) {
+              clearTimeout(promptSaveTimer);
+              promptSaveId = null;
+              promptStatus.textContent = '连接中断，未确认保存成功；重新连接后请重试。';
+            }
+          }
           app.dataset.conn = next;
           setConnLabel(CONN_LABEL[next] || next);
           clearTimeout(retryHintTimer);
@@ -3178,12 +3254,17 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         function paintControls() {
           var ok = conn === 'live';
           Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (b) { b.disabled = !ok; });
+          byId('captureSendBtn').disabled = !ok || !promptReady;
+          byId('stopPhoneBtn').disabled = !ok || !(live || entries.some(function (e) { return e.kind === 'pending'; }));
+          byId('saveScreenshotPrompt').disabled = !ok || !promptReady || !!promptSaveId || !promptInput.value.trim();
+          byId('resetScreenshotPrompt').disabled = !promptReady || !!promptSaveId;
+          promptInput.disabled = !!promptSaveId;
           captureBtn.disabled = !ok;
           imageInput.disabled = !ok;
           imageBtn.classList.toggle('is-disabled', !ok);
           imageBtn.setAttribute('aria-disabled', ok ? 'false' : 'true');
           sendBtn.disabled = !ok || !input.value.trim();
-          input.placeholder = ok ? 'Ask anything' : 'Waiting for your desktop…';
+          input.placeholder = ok ? '输入问题或本次截图的补充要求…' : 'Waiting for your desktop…';
         }
         function sendCommand(cmd) {
           if (!isLive()) return false;
@@ -3246,6 +3327,52 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           if (conn === 'reconnecting' || (socket && socket.readyState > 1)) { reconnectDelay = 800; connect(); }
         });
 
+        // The browser holds an editing draft only; the desktop owns the saved prompt.
+        var screenshotPrompt = '';
+        var defaultScreenshotPrompt = '';
+        var promptReady = false;
+        var promptDirty = false;
+        var promptSaveId = null;
+        var promptSaveTimer = null;
+        var promptDialog = byId('screenshotPromptDialog');
+        var promptInput = byId('screenshotPromptInput');
+        var promptStatus = byId('promptSaveStatus');
+        byId('editScreenshotPrompt').addEventListener('click', function () {
+          if (!promptDirty) promptInput.value = screenshotPrompt;
+          promptStatus.textContent = promptReady ? '当前提示词来自电脑软件。' : '等待连接电脑后读取已保存的提示词。';
+          promptDialog.showModal();
+          paintControls();
+        });
+        byId('closeScreenshotPrompt').addEventListener('click', function () { promptDialog.close(); });
+        promptInput.addEventListener('input', function () { promptDirty = true; promptStatus.textContent = '尚未保存'; paintControls(); });
+        byId('resetScreenshotPrompt').addEventListener('click', function () {
+          promptInput.value = defaultScreenshotPrompt;
+          promptDirty = true;
+          promptStatus.textContent = '已填入默认提示词，点击“保存到软件”生效。';
+          paintControls();
+        });
+        byId('saveScreenshotPrompt').addEventListener('click', function () {
+          if (promptSaveId || !promptInput.value.trim()) return;
+          var requestId = 'prompt:' + Date.now() + ':' + (++localSeq);
+          if (!sendCommand({ type: 'save-screenshot-prompt', prompt: promptInput.value, requestId: requestId })) {
+            promptStatus.textContent = '未连接电脑，保存失败。'; return;
+          }
+          promptSaveId = requestId;
+          promptStatus.textContent = '正在保存到电脑…';
+          promptSaveTimer = setTimeout(function () {
+            promptSaveId = null;
+            promptStatus.textContent = '未收到保存确认，请重试。';
+            paintControls();
+          }, 10000);
+          paintControls();
+        });
+        byId('clearScreenBtn').addEventListener('click', function () { clearScreen(); paintControls(); showToast('已清空当前网页显示'); });
+        document.addEventListener('click', function (event) {
+          var more = byId('moreActions');
+          var action = event.target.closest('[data-action]');
+          if (!more.contains(event.target) || (action && !action.classList.contains('needs-meeting'))) more.open = false;
+        });
+
         // ───── Composer ───────────────────────────────────────────────────
         var DELIVERY_TIMEOUT_MS = 10000;
         function autoGrow() {
@@ -3263,11 +3390,14 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
         byId('captureSendBtn').addEventListener('click', function () { submit(true); });
         byId('stopPhoneBtn').addEventListener('click', function () { sendCommand({ type: 'cancel' }); });
         function submit(captureScreen) {
-          var text = input.value.trim() || (captureScreen === true ? '请根据当前电脑屏幕截图分析并回答其中的问题。' : '');
-          if (!text) return;
+          var supplement = input.value.trim();
+          var text = captureScreen === true ? screenshotPrompt : supplement;
+          if (!text || (captureScreen === true && !promptReady)) return;
           if (!isLive()) { showToast('Not connected to your desktop', true); return; }
           var entry = { key: 'u:local:' + (++localSeq), t: Date.now(), kind: 'user', content: text, state: 'sending', captureScreen: captureScreen === true, local: true };
-          if (!sendCommand({ type: 'chat', message: text, captureScreen: captureScreen === true })) { showToast('Not connected to your desktop', true); return; }
+          entry.requestId = 'capture:' + Date.now() + ':' + localSeq;
+          entry.command = captureScreen === true ? { type: 'capture-and-send', message: supplement, requestId: entry.requestId } : { type: 'chat', message: text };
+          if (!sendCommand(entry.command)) { showToast('Not connected to your desktop', true); return; }
           input.value = '';
           autoGrow();
           paintControls();
@@ -3276,6 +3406,7 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           appendEntry(entry);
           armDelivery(entry);
           addPending('chat', '', null);
+          paintControls();
         }
         function armDelivery(entry) {
           clearTimeout(entry.timer);
@@ -3288,11 +3419,12 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           }, DELIVERY_TIMEOUT_MS);
         }
         function retrySend(entry) {
-          if (!sendCommand({ type: 'chat', message: entry.content, captureScreen: entry.captureScreen === true })) { showToast('Not connected to your desktop', true); return; }
+          if (!sendCommand(entry.command || { type: 'chat', message: entry.content })) { showToast('Not connected to your desktop', true); return; }
           entry.state = 'sending';
           paintUserState(entry);
           armDelivery(entry);
           addPending('chat', '', null);
+          paintControls();
         }
 
         // Buttons that answer from the conversation look quieter with no
@@ -3474,7 +3606,6 @@ export const PHONE_MIRROR_HTML = `<!doctype html>
           closeMenu();
           if (what === 'copy') copyConversation();
           else if (what === 'transcript') copyTranscript();
-          else if (what === 'clear') clearScreen();
         });
         function copyConversation() {
           var parts = [];

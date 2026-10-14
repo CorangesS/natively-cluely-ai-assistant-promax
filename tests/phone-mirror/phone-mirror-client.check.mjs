@@ -175,7 +175,7 @@ const DEVICES = [
   { name: 'galaxy-landscape', engine: chromium, desc: devices['Galaxy S9+ landscape'] },
 ];
 // channel 'chromium' = the full build, so the separate headless shell isn't needed.
-const launch = (engine) => engine.launch(engine === chromium ? { channel: 'chromium' } : {});
+const launch = (engine) => engine.launch(engine === chromium ? { channel: process.env.PHONE_BROWSER_CHANNEL || 'chromium' } : {});
 
 const failures = [];
 function check(dev, name, ok, detail) {
@@ -211,7 +211,7 @@ const geo = (page) => page.evaluate(() => {
     docScrollW: document.documentElement.scrollWidth,
     appScrollW: document.getElementById('app').scrollWidth,
     feed: { scrollTop: feed.scrollTop, scrollHeight: feed.scrollHeight, clientHeight: feed.clientHeight },
-    dock: r('#dock'), bar: r('#bar'), tx: r('#tx'), chips: r('#chips'), input: r('#input'),
+    dock: r('#dock'), bar: r('#bar'), tx: r('#tx'), chips: r('.primary-actions'), input: r('#input'),
     lastCard: last && { top: last.top, bottom: last.bottom },
     cards: cards.length,
   };
@@ -262,6 +262,7 @@ async function scenario(dev, scheme) {
     await shot('02-transcript');
 
     // ── action → placeholder → labelled answer replaces it in place ──
+    if (!(await page.$eval('#moreActions', (n) => n.open))) await page.click('#moreActions summary');
     await page.click('.chip[data-action="whatToAnswer"]');
     await page.waitForSelector('.answer.is-pending', { timeout: 1000 });
     const pending = await page.$eval('.answer.is-pending', (n) => ({ ask: n.querySelector('.ask-label')?.textContent, thinking: n.querySelector('.thinking')?.textContent, skel: !!document.querySelector('.skel') }));
@@ -274,6 +275,7 @@ async function scenario(dev, scheme) {
     const chrome = await page.$eval('.answer:not(.is-pending)', (n) => { const cs = getComputedStyle(n); return { bg: cs.backgroundColor, shadow: cs.boxShadow }; });
     check(tag, 'no card around the answer, as on the overlay', chrome.bg === 'rgba(0, 0, 0, 0)' && chrome.shadow === 'none', JSON.stringify(chrome));
     // ── Answer (voice toggle) gets no placeholder ──
+    if (!(await page.$eval('#moreActions', (n) => n.open))) await page.click('#moreActions summary');
     await page.click('.chip[data-action="answer"]');
     await sleep(150);
     check(tag, 'Answer chip adds no placeholder', (await page.$$('.answer.is-pending')).length === 0);
@@ -539,6 +541,7 @@ async function timeoutScenarios() {
     check('timeouts', 'still one bubble after the retry', (await page.$$('.row-user')).length === 1);
 
     desktop.ignoreActions = true;
+    if (!(await page.$eval('#moreActions', (n) => n.open))) await page.click('#moreActions summary');
     await page.click('.chip[data-action="clarify"]');
     await page.waitForSelector('.answer.is-pending', { timeout: 1000 });
     await page.waitForSelector('.answer.is-idle', { timeout: 48000 });
@@ -663,13 +666,13 @@ async function trayScenario(dev, scheme) {
     return {
       vw: innerWidth, docScrollW: document.documentElement.scrollWidth,
       open: document.getElementById('trayWrap').dataset.open,
-      tray: r('.tray'), chips: r('#chips'), dock: r('#dock'),
+      tray: r('.tray'), chips: r('.primary-actions'), dock: r('#dock'),
       thumbs: imgs.length, loaded: imgs.every((i) => i.complete && i.naturalWidth > 0),
       title: title.textContent, titleClipped: title.scrollWidth > title.clientWidth + 1,
       lastCardBottom: cards.length ? cards[cards.length - 1].getBoundingClientRect().bottom : null,
       lastCard: cards.length ? cards[cards.length - 1].className : null,
       feedMetrics: (() => { const f = document.getElementById('feed'); return { top: f.scrollTop, h: f.scrollHeight, ch: f.clientHeight, pb: getComputedStyle(f).paddingBottom }; })(),
-      chipsShown: getComputedStyle(document.getElementById('chips')).display !== 'none',
+      chipsShown: getComputedStyle(document.querySelector('.primary-actions')).display !== 'none',
     };
   });
   try {
@@ -719,6 +722,7 @@ async function trayScenario(dev, scheme) {
 
     // Sent with an answer: the tray folds away, the screenshots land above the
     // answer (which replaces the placeholder in place).
+    if (!(await page.$eval('#moreActions', (n) => n.open))) await page.click('#moreActions summary');
     await page.click('.chip[data-action="whatToAnswer"]');
     await page.waitForFunction(() => document.getElementById('trayWrap').dataset.open === 'false', null, { timeout: 3000 });
     await page.waitForSelector('.row-shots', { timeout: 3000 });
@@ -807,6 +811,7 @@ async function meetingStateScenario(dev, scheme) {
     check(tag, 'a status on the line is not faded at its end', !faded || faded === 'none', faded);
     const chipsIdle = await page.$$eval('.chip[data-needs-meeting]', (ns) => ns.map((n) => n.classList.contains('needs-meeting')));
     check(tag, 'no meeting: conversation buttons look quieter', chipsIdle.length === 4 && chipsIdle.every(Boolean), JSON.stringify(chipsIdle));
+    if (!(await page.$eval('#moreActions', (n) => n.open))) await page.click('#moreActions summary');
     await page.click('.chip[data-action="recap"]');
     const shook = await page.$eval('.chip[data-action="recap"]', (n) => n.classList.contains('is-shaking') && getComputedStyle(n).animationName);
     await sleep(250);

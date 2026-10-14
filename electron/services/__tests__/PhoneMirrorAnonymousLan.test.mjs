@@ -137,7 +137,7 @@ test('browser opens a plain URL and sends screenshot questions in one click', {
       const id = String(commands.length);
       svc.publishUserMessage(id, command.message);
       svc.publishToken(id, 'Screen answer');
-      svc.publishDone(id, 'Screen answer');
+      // Leave the stream active so stop/clear can be exercised.
     }
   });
   try {
@@ -150,7 +150,7 @@ test('browser opens a plain URL and sends screenshot questions in one click', {
     await page.locator('#input').fill('解释屏幕上的问题');
     await page.locator('#captureSendBtn').click();
     await page.waitForFunction(() => document.getElementById('feedInner').textContent.includes('Screen answer'));
-    assert.deepEqual(commands[0], { type: 'chat', message: '解释屏幕上的问题', captureScreen: true });
+    assert.deepEqual(commands[0], { type: 'chat', message: '请根据当前电脑屏幕截图分析并回答其中的问题。\n\n本次补充要求：\n解释屏幕上的问题', captureScreen: true });
     await page.locator('#captureSendBtn').click();
     await page.waitForFunction(() => document.getElementById('feedInner').textContent.includes('请根据当前电脑屏幕截图分析并回答其中的问题。'));
     assert.equal(commands[1].captureScreen, true);
@@ -158,9 +158,98 @@ test('browser opens a plain URL and sends screenshot questions in one click', {
     const until = Date.now() + 2000;
     while (commands.length < 3 && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(commands[2].type, 'cancel');
+    svc.publishDone('2', 'Screen answer');
+    await page.waitForFunction(() => document.getElementById('stopPhoneBtn').disabled);
+
+    // T0 controls are visible, large and side-by-side on phone and desktop.
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }, { width: 667, height: 375 }]) {
+      await page.setViewportSize(viewport);
+      await page.waitForTimeout(400);
+      const capture = await page.locator('#captureSendBtn').boundingBox();
+      const clear = await page.locator('#clearScreenBtn').boundingBox();
+      assert.ok(capture.height >= 48 && clear.height >= 48);
+      assert.ok(Math.abs(capture.y - clear.y) < 1 && capture.x + capture.width <= clear.x);
+      assert.ok(clear.x + clear.width <= viewport.width + 1 && clear.y + clear.height <= viewport.height + 1, JSON.stringify({viewport, capture, clear}));
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.locator('[data-menu="clear"]').count(), 0);
+    await page.locator('#moreActions summary').click();
+    assert.ok(await page.locator('[data-action="codeHint"]').isVisible());
+    await page.locator('#moreActions summary').click();
+
+    await page.locator('#editScreenshotPrompt').click();
+    await page.locator('#screenshotPromptInput').fill('分析屏幕，先给结论，再给代码。');
+    await page.locator('#saveScreenshotPrompt').click();
+    await page.waitForFunction(() => document.getElementById('promptSaveStatus').textContent === '已保存到电脑软件');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8')).phoneMirrorScreenshotPrompt, '分析屏幕，先给结论，再给代码。');
+    await page.locator('#closeScreenshotPrompt').click();
+
+    // A separate browser context reads the desktop value without browser storage.
+    const otherContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const other = await otherContext.newPage();
+    await other.goto(`http://127.0.0.1:${port}/`);
+    await other.waitForFunction(() => !document.getElementById('captureSendBtn').disabled);
+    await other.locator('#editScreenshotPrompt').click();
+    assert.equal(await other.locator('#screenshotPromptInput').inputValue(), '分析屏幕，先给结论，再给代码。');
+    await other.locator('#screenshotPromptInput').fill('新设备保存的提示词');
+    await other.locator('#saveScreenshotPrompt').click();
+    await other.waitForFunction(() => document.getElementById('promptSaveStatus').textContent === '已保存到电脑软件');
+    await page.locator('#editScreenshotPrompt').click();
+    await page.waitForFunction(() => document.getElementById('screenshotPromptInput').value === '新设备保存的提示词');
+
+    // A rejected disk write must not report success or replace the last saved value.
+    const settings = globalThis.__nativelySettingsManagerV1__;
+    const save = settings.saveSettings;
+    settings.saveSettings = () => false;
+    try {
+      await page.locator('#screenshotPromptInput').fill('不能保存的值');
+      await page.locator('#saveScreenshotPrompt').click();
+      await page.waitForFunction(() => document.getElementById('promptSaveStatus').textContent.includes('保存失败'));
+      assert.equal(settings.get('phoneMirrorScreenshotPrompt'), '新设备保存的提示词');
+    } finally { settings.saveSettings = save; }
+    await page.locator('#closeScreenshotPrompt').click();
+    await page.locator('#input').fill('使用 Python');
+    await page.locator('#captureSendBtn').click();
+    await page.waitForFunction(() => document.querySelectorAll('.row-user.is-sending').length === 0);
+    assert.equal(commands.at(-1).message, '新设备保存的提示词\n\n本次补充要求：\n使用 Python');
+    const fixedRequest = commands.at(-1).message;
+    await other.locator('#screenshotPromptInput').fill('下一次使用的提示词');
+    await other.locator('#saveScreenshotPrompt').click();
+    await other.waitForFunction(() => document.getElementById('promptSaveStatus').textContent === '已保存到电脑软件');
+    assert.equal(commands.at(-1).message, fixedRequest);
+
+    const commandCount = commands.length;
+    await page.locator('#clearScreenBtn').click();
+    assert.equal(await page.locator('.row-user').count(), 0);
+    assert.ok(await page.locator('.answer.is-streaming').count() || await page.locator('.is-streaming').count());
+    assert.equal(commands.length, commandCount, 'clear is local, never sends cancel/delete');
+    await page.locator('#input').fill('普通问题');
+    await page.locator('#sendBtn').click();
+    await page.waitForFunction(() => document.querySelectorAll('.row-user.is-sending').length === 0);
+    assert.deepEqual(commands.at(-1), { type: 'chat', message: '普通问题' });
+
+    // Reload the desktop settings object from disk, as on app startup.
+    globalThis.__nativelySettingsManagerV1__ = new settings.constructor();
+    await other.reload();
+    await other.waitForFunction(() => !document.getElementById('captureSendBtn').disabled);
+    await other.locator('#editScreenshotPrompt').click();
+    assert.equal(await other.locator('#screenshotPromptInput').inputValue(), '下一次使用的提示词');
+    await other.locator('#resetScreenshotPrompt').click();
+    await other.locator('#saveScreenshotPrompt').click();
+    await other.waitForFunction(() => document.getElementById('promptSaveStatus').textContent === '已保存到电脑软件');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf8')).phoneMirrorScreenshotPrompt, '请根据当前电脑屏幕截图分析并回答其中的问题。');
+    await otherContext.close();
+    await page.screenshot({ path: path.join(os.tmpdir(), 'natively-lan-ui.png'), fullPage: true });
+    await context.setOffline(true);
+    for (const client of svc.wss.clients) client.terminate();
+    await page.waitForFunction(() => document.getElementById('captureSendBtn').disabled);
+    assert.equal(await page.locator('#clearScreenBtn').isEnabled(), true);
+    await page.locator('#editScreenshotPrompt').click();
+    assert.equal(await page.locator('#saveScreenshotPrompt').isDisabled(), true);
+    await page.locator('#closeScreenshotPrompt').click();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
-    await page.screenshot({ path: path.join(os.tmpdir(), 'natively-lan-ui.png'), fullPage: true });
+
     await context.close();
   } finally { remove(); await browser.close(); }
 });
