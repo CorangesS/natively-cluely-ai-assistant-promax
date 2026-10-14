@@ -4,7 +4,7 @@
 
 ## 构建前须知
 
-- **完整应用仍依赖私有 `premium` 子模块**，必须拥有 [该仓库](https://github.com/Natively-AI-assistant/natively-premium) 的读取权限。若拉取时报 `Repository not found` 或 `Authentication failed`，先解决权限问题。桌面端不需要初始化 `natively-api` 子模块。
+- 本版本已移除上游 Pro 授权、试用、个人资料智能、岗位分析和高级模式界面，**无需上游账号、许可证或 `premium` 子模块**。桌面构建也不需要 `natively-api` 子模块。
 - 安装过程需要联网下载 npm、Electron、Rust 依赖和本地模型。正常构建不要给 `npm ci` 添加 `--ignore-scripts` 或 `--omit=optional`，也不要跨系统复制 `node_modules` 或编译产物。
 - LLM API Key 可在应用启动后的设置中填写，编译本身不需要。每条命令成功后再执行下一条。
 
@@ -39,13 +39,12 @@ xcrun --sdk macosx --show-sdk-version
 ```bash
 git clone https://github.com/CorangesS/natively-cluely-ai-assistant-promax.git
 cd natively-cluely-ai-assistant-promax
-git submodule update --init --recursive -- premium
 npm ci
 npm run build:native
 npm start
 ```
 
-已有本仓库时，进入项目目录，从子模块初始化开始执行即可。`build:native` 默认只编译当前 Mac 架构；`npm start` 启动 Vite 和 Electron。截图和音频功能需要在 macOS 中授予屏幕录制、麦克风等相应权限。
+已有本仓库时，进入项目目录，从 `npm ci` 开始执行即可。`build:native` 默认只编译当前 Mac 架构；`npm start` 启动 Vite 和 Electron。截图和音频功能需要在 macOS 中授予屏幕录制、麦克风等相应权限。
 
 开发时如需 Apple Speech，另行执行下列命令再启动应用；Intel Mac 将 `arm64` 改为 `x64`。该功能运行需要 macOS 26+，编译需要上述 Xcode / SDK。
 
@@ -61,9 +60,9 @@ npm run build:apple-speech -- --arch arm64
 npm run app:build -- --mac --arm64 --dir --publish never
 ```
 
-Apple Silicon 的应用位于 `release/mac-arm64/corespeechd.app`。Intel 改用 `--x64`，通常输出到 `release/mac/corespeechd.app`。`corespeechd` 是当前项目的应用文件名。缺少日历凭据时，`--dir` 允许继续构建，但日历功能不可用。
+Apple Silicon 的应用位于 `release/mac-arm64/corespeechd.app`。Intel 改用 `--x64`，通常输出到 `release/mac/corespeechd.app`。`corespeechd` 是当前项目的应用文件名。日历功能可选，不配置凭据也能构建。
 
-生成 DMG 和 ZIP 前，先完成下文的“安装包所需日历配置”，然后执行：
+生成 DMG 和 ZIP：
 
 ```bash
 npm run app:build -- --mac --arm64 --publish never
@@ -103,13 +102,12 @@ Node 平台应输出 `win32 x64`。本文使用 `npm.cmd`，避免 PowerShell �
 ```powershell
 git clone https://github.com/CorangesS/natively-cluely-ai-assistant-promax.git
 cd natively-cluely-ai-assistant-promax
-git submodule update --init --recursive -- premium
 npm.cmd ci
 npm.cmd run build:native
 npm.cmd start
 ```
 
-已有本仓库时，进入项目目录，从子模块初始化开始执行即可。
+已有本仓库时，进入项目目录，从 `npm ci` 开始执行即可。
 
 ### 3. 生成程序或安装包
 
@@ -119,9 +117,9 @@ npm.cmd start
 npm.cmd run app:build -- --win --x64 --dir --publish never
 ```
 
-入口为 `release\win-unpacked\audiodg.exe`，这是当前项目的程序文件名。缺少日历凭据时，`--dir` 允许继续构建，但日历功能不可用。
+入口为 `release\win-unpacked\audiodg.exe`，这是当前项目的程序文件名。日历功能可选，不配置凭据也能构建。
 
-生成 NSIS 安装包和 portable 程序前，先完成下文的日历配置，然后执行：
+生成 NSIS 安装包和 portable 程序：
 
 ```powershell
 npm.cmd run app:build -- --win --x64 --publish never
@@ -129,11 +127,11 @@ npm.cmd run app:build -- --win --x64 --publish never
 
 产物在 `release\`，包括安装包和 portable `.exe`。以上命令不上传 Release，也不包含 Windows 分发签名配置。
 
-## 安装包所需日历配置（两平台通用）
+## 可选：Google Calendar
 
-**现有打包脚本要求 Google Calendar OAuth client secret，即使你不使用日历功能。** 仅开发运行或生成 `--dir` 应用目录时可以不配置。
+聊天、截图和局域网控制均不需要日历凭据；`.app`、DMG 和 Windows 安装包也不再强制要求它。仅需要 Google Calendar 集成时配置以下内容。
 
-生成 DMG / Windows 安装包前，在项目根目录的本地 `.env` 中设置自己的有效凭据（不要提交 `.env`）：
+在项目根目录的本地 `.env` 中设置自己的有效凭据（不要提交 `.env`）：
 
 ```dotenv
 GOOGLE_CALENDAR_CLIENT_ID=你的Google_OAuth客户端ID
@@ -146,11 +144,9 @@ GOOGLE_CALENDAR_CLIENT_SECRET=与上述ID匹配的客户端Secret
 
 | 问题 | 处理 |
 | --- | --- |
-| 缺少 `premium/...` | 确认私有仓库权限并初始化子模块；`build:electron:core-smoke` 仅用于核心编译检查，不能代替完整应用构建。 |
 | Mac 提示 Apple Speech SDK 版本不足 | 安装并选择 Xcode 26+，检查 `xcrun --sdk macosx --show-sdk-version`。 |
 | Windows 找不到 Python / MSBuild / `link.exe` | 检查 Python、C++ 工作负载和 Windows SDK，必要时使用 VS Developer PowerShell。 |
 | `.node` 模块架构或 ABI 不匹配 | 关闭自己启动的应用，在目标系统重新执行 `npm ci`、`npm run build:native`；必要时执行 `npm run rebuild:native`。Windows 使用 `npm.cmd`。 |
 | 本地模型资源缺失 | 执行 `node scripts/download-models.js` 后重试，检查下载网络是否畅通。 |
-| `[package-app] Refusing to package` 提到 calendar | 完成上述日历配置后重新构建，或使用 `--dir` 生成本地应用目录。 |
 
-验证范围：已在 macOS 完成类型检查、前端构建、核心 Electron 编译及相关回归测试；尚未完成 macOS 完整应用打包运行和 Windows 实机构建验收。
+验证范围：已在 macOS 完成类型检查、前端构建、正常 Electron 构建（无需私有模块）及相关回归测试；尚未完成 macOS 完整应用打包运行和 Windows 实机构建验收。

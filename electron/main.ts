@@ -1311,19 +1311,6 @@ interface ScreenshotCaptureSession {
   wasStealthTypingActive: boolean;
 }
 
-// Premium: Knowledge modules loaded conditionally
-let KnowledgeOrchestratorClass: any = null;
-let KnowledgeDatabaseManagerClass: any = null;
-// Phase 1: shared comp-evidence detector for transcript-aware intent routing.
-let textHasCompEvidence: ((text: string) => boolean) | null = null;
-try {
-    KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-    KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
-    textHasCompEvidence = require('../premium/electron/knowledge/NegotiationConversationTracker').textHasCompEvidence;
-} catch {
-    console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
-}
-
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
 import { buildTelemetrySinks } from "./services/telemetry/telemetrySinks"
@@ -1466,13 +1453,6 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
-  /**
-   * Set by initializeIpcHandlers. A meeting that starts with no AI to answer it
-   * starts the free trial by itself (src/lib/trial/autoTrial.mjs). Returns at
-   * once; `autoTrialSettled` says whether a start is still in flight.
-   */
-  public autoStartTrialForMeeting: (() => void) | null = null;
-  public autoTrialSettled: (() => boolean) | null = null;
   private _meetingGeneration = 0;
   // Serializes start/stop so two transitions can never interleave. This is the
   // ONLY mutual-exclusion layer: _meetingGeneration, the _audioInitPromise
@@ -2685,232 +2665,6 @@ export class AppState {
       console.error('[AppState] Failed to initialize RAGManager:', error);
     }
 
-    // Initialize Knowledge Orchestrator
-    try {
-      const db = DatabaseManager.getInstance();
-      const sqliteDb = db.getDb();
-
-      if (sqliteDb && KnowledgeDatabaseManagerClass && KnowledgeOrchestratorClass) {
-        const knowledgeDb = new KnowledgeDatabaseManagerClass(sqliteDb);
-        this.knowledgeOrchestrator = new KnowledgeOrchestratorClass(knowledgeDb);
-
-        // Role Insight owns its own tables in the same SQLite file. It needs the
-        // raw handle, which KnowledgeDatabaseManager does not expose, so it is
-        // attached here. Guarded: a failure disables only Role Insight.
-        try {
-          this.knowledgeOrchestrator.attachRoleInsight?.(sqliteDb);
-        } catch (e) {
-          console.warn('[AppState] Role Insight attach skipped:', e);
-        }
-
-        // Wire up LLM functions
-        const llmHelper = this.processingHelper.getLLMHelper();
-
-        // generateContent function for LLM calls
-        // Join ALL content parts (some callers — e.g. live negotiation coaching —
-        // pass [{text: systemPrefix}, {text: prompt}]; reading only [0] dropped the
-        // prompt). Single-item callers (extraction, script) are unaffected.
-        const joinContents = (contents: any[]) =>
-          (Array.isArray(contents) ? contents : [contents])
-            .map((c: any) => (typeof c === 'string' ? c : c?.text || ''))
-            .filter(Boolean)
-            .join('\n\n');
-        this.knowledgeOrchestrator.setGenerateContentFn(async (contents: any[]) => {
-          return await llmHelper.generateContentStructured(joinContents(contents));
-        });
-
-        // Low-latency generation for LIVE negotiation coaching (spoken in real
-        // time): Flash-first chain so the tactical note appears fast. The AOT
-        // negotiation script + all extraction keep the quality-first fn above.
-        if (typeof this.knowledgeOrchestrator.setLiveCoachingContentFn === 'function') {
-          this.knowledgeOrchestrator.setLiveCoachingContentFn(async (contents: any[]) => {
-            // Deliberately NOT on the fast path - this returns a tacticalNote + exactScript the user reads
-            // and says aloud, so it is not an "invisible call". The fast rung also caps
-            // output at 256 tokens, and a truncated coaching JSON degrades to a canned
-            // fallback mid-negotiation with nothing pointing at the setting that caused it.
-            return await llmHelper.generateContentStructured(joinContents(contents));
-          });
-        }
-
-        // Company-research search provider (Tavily key → Natively API → none),
-        // resolved per AOT run so keys added/changed mid-session take effect.
-        // Same cascade the manual profile:research-company handler uses; without
-        // this the JD-upload AOT pipeline always fell back to LLM-only dossiers.
-        if (typeof this.knowledgeOrchestrator.setSearchProviderResolver === 'function') {
-          const {
-            resolveCompanySearchProvider,
-          } = require('./services/resolveCompanySearchProvider');
-          this.knowledgeOrchestrator.setSearchProviderResolver(resolveCompanySearchProvider);
-        }
-
-        // Is company research appropriate in the active mode? (Routing audit,
-        // 2026-09-04.) The orchestrator's dossier gate was mode-blind, so a
-        // Team Meet or Lecture turn containing a bare token like "reviews" or
-        // "funding" could put a query on the wire to an external search
-        // provider whenever a JD was still loaded from an earlier session.
-        //
-        // In exactly those modes the result is discarded: the intercept gate in
-        // LLMHelper runs AFTER processQuestion returns, so the research had
-        // already happened and its output was thrown away. The call could never
-        // change the answer, only leak the query and spend the budget.
-        //
-        // Reuses the SAME predicate as that gate, so the two cannot drift: the
-        // modes that discard the result are exactly the modes that no longer
-        // request it. Resolved per call because the user switches modes
-        // mid-session. Optional-capability guard matches the sibling wiring
-        // above, so an older premium build without the setter is unaffected.
-        if (typeof this.knowledgeOrchestrator.setCompanyResearchAllowedFn === 'function') {
-          this.knowledgeOrchestrator.setCompanyResearchAllowedFn(() => {
-            try {
-              // Local require, matching every other ModesManager use in this
-              // file: the module is not statically imported here.
-              const { ModesManager } = require('./services/ModesManager');
-              return ModesManager.getInstance().isPremiumKnowledgeInterceptAllowed();
-            } catch {
-              // Never let a mode-lookup failure disable a paid capability.
-              return true;
-            }
-          });
-        }
-
-        // Embedding function — lazily delegate to the cascaded EmbeddingPipeline
-        // (OpenAI → Gemini → Ollama → Local bundled model).
-        // We await waitForReady() so uploads during boot wait for the pipeline
-        // instead of immediately throwing 'not ready'.
-        const self = this;
-        const embedWithProducerMetadata = async (text: string) => {
-          const pipeline = self.ragManager?.getEmbeddingPipeline();
-          if (!pipeline) throw new Error('RAG pipeline not available');
-          await pipeline.waitForReady();
-          return await pipeline.getEmbeddingWithFallback(text);
-        };
-        this.knowledgeOrchestrator.setEmbedFn(async (text: string) => {
-          return (await embedWithProducerMetadata(text)).embedding;
-        });
-        if (typeof this.knowledgeOrchestrator.setEmbedWithMetadataFn === 'function') {
-          this.knowledgeOrchestrator.setEmbedWithMetadataFn(embedWithProducerMetadata);
-        }
-        // Ingest embeds its nodes a BATCH at a time through this (2026-09-19): ten
-        // concurrent single-text requests per batch drew 429s from the embed route
-        // and silently demoted a whole résumé's nodes to the bundled model's space.
-        if (typeof (this.knowledgeOrchestrator as any).setEmbedBatchWithMetadataFn === 'function') {
-          (this.knowledgeOrchestrator as any).setEmbedBatchWithMetadataFn(async (texts: string[]) => {
-            const pipeline = self.ragManager?.getEmbeddingPipeline();
-            if (!pipeline) throw new Error('RAG pipeline not available');
-            await pipeline.waitForReady();
-            return await pipeline.getEmbeddingsWithFallback(texts);
-          });
-        }
-        // Report the active document-embedder's composite space so the orchestrator
-        // can detect knowledge nodes embedded in an OLD space (e.g. after a
-        // gemini-embedding-001 → -2 upgrade) and re-embed them, instead of silently
-        // comparing v1 node vectors against v2 query vectors (same dims = no dim guard).
-        if (typeof this.knowledgeOrchestrator.setActiveSpaceFn === 'function') {
-          this.knowledgeOrchestrator.setActiveSpaceFn(() => {
-            return self.ragManager?.getEmbeddingPipeline()?.getActiveSpaceKey();
-          });
-        }
-        if (typeof this.knowledgeOrchestrator.setEmbedQueryFn === 'function') {
-          this.knowledgeOrchestrator.setEmbedQueryFn(async (text: string) => {
-            const pipeline = self.ragManager?.getEmbeddingPipeline();
-            if (!pipeline) throw new Error('RAG pipeline not available');
-            await pipeline.waitForReady();
-            return await pipeline.getEmbeddingForQuery(text);
-          });
-        }
-        // Fast on-device query embedder for the latency-critical knowledge path.
-        // The orchestrator dimension-checks `dimensions` against the index and
-        // only uses `embed` (bundled MiniLM, ~10ms) when compatible — otherwise
-        // it falls back to the cloud embedFn above so retrieval stays correct.
-        if (typeof this.knowledgeOrchestrator.setFastQueryEmbedFn === 'function') {
-          this.knowledgeOrchestrator.setFastQueryEmbedFn(() => {
-            const pipeline = self.ragManager?.getEmbeddingPipeline();
-            return {
-              dimensions: pipeline?.localDimensions ?? null,
-              // Composite space of the local embedder — the orchestrator gates the
-              // fast path on space identity (not just dimension), so a same-dim but
-              // different-space collision can't silently produce garbage similarity.
-              space: pipeline?.localSpaceKey ?? null,
-              embed: async (text: string) => {
-                if (!pipeline) return null;
-                // Await readiness so the FIRST cold-session question still gets the
-                // local fast path (the local fallback provider is only assigned
-                // once the pipeline finishes init). Without this, the very query
-                // prewarm targets would silently fall back to the cloud embedder.
-                // Swallow errors — getEmbeddingForQueryLocalOnly returns null on
-                // any failure and the orchestrator falls back to embedFn.
-                try { await pipeline.waitForReady(); } catch { /* fall through */ }
-                return await pipeline.getEmbeddingForQueryLocalOnly(text);
-              },
-            };
-          });
-        }
-
-        // Kick a knowledge re-embed once the embedding pipeline is ready. CRITICAL:
-        // the orchestrator's constructor fires refreshCache()→ensureEmbeddingSpace()
-        // BEFORE setActiveSpaceFn is wired above, so that initial pass no-ops (no active
-        // space yet). Without this explicit kick, a v1→v2 model upgrade would leave the
-        // resume/JD nodes stranded in the old space — _spaceGatedNodes would exclude them
-        // and semantic retrieval would silently return nothing until the user re-uploaded.
-        // This is the knowledge-base analogue of RAGManager.scheduleAutoReindex's self-heal.
-        if (typeof this.knowledgeOrchestrator.ensureEmbeddingSpace === 'function') {
-          const ko = this.knowledgeOrchestrator;
-          (async () => {
-            try {
-              await self.ragManager?.getEmbeddingPipeline()?.waitForReady();
-              await ko.ensureEmbeddingSpace();
-            } catch (e: any) {
-              console.warn('[main] Knowledge ensureEmbeddingSpace kick failed (non-fatal):', e?.message || e);
-            }
-          })();
-        }
-
-        // Phase 1: transcript-aware intent hint. The orchestrator (premium) has
-        // no SessionTracker reference (package boundary), so the app layer reads
-        // the rolling ~180s transcript here and hands back a lightweight verdict.
-        // We inspect only the last 1-2 INTERVIEWER turns for comp evidence — NOT
-        // the whole window (that caused topic-bleed) and NOT the candidate's own
-        // typed question (classified separately). Cheap + synchronous.
-        if (typeof this.knowledgeOrchestrator.setConversationContextProvider === 'function') {
-          this.knowledgeOrchestrator.setConversationContextProvider(() => {
-            if (!textHasCompEvidence) return null;
-            try {
-              const items = self.intelligenceManager?.getContext(180) ?? [];
-              const interviewerTurns = items.filter((i: any) => i.role === 'interviewer');
-              const lastTwo = interviewerTurns.slice(-2);
-              const lastInterviewerTurn = lastTwo.length ? lastTwo[lastTwo.length - 1].text : undefined;
-              const recentInterviewerComp = lastTwo.some((i: any) => textHasCompEvidence!(i.text));
-              return { recentInterviewerComp, lastInterviewerTurn };
-            } catch {
-              return null;
-            }
-          });
-        }
-
-        // Attach KnowledgeOrchestrator to LLMHelper
-        llmHelper.setKnowledgeOrchestrator(this.knowledgeOrchestrator);
-
-        // Restore persisted toggle states so UI reflects what the user left them as.
-        // NOTE: groqFastTextMode is now restored unconditionally in the AppState constructor
-        // so it is not repeated here.
-        const sm = SettingsManager.getInstance();
-        if (sm.get('knowledgeMode')) {
-          this.knowledgeOrchestrator.setKnowledgeMode(true);
-          console.log('[AppState] Knowledge mode restored from settings');
-          // Pre-warm the provider prompt cache off the hot path so the first
-          // question of the session doesn't pay full cold-prefill TTFT. Gated
-          // on knowledge mode being active AND a resume being present (only then
-          // is a session likely imminent). Best-effort, non-blocking.
-          if (this.knowledgeOrchestrator.isKnowledgeMode()) {
-            llmHelper.prewarmPromptCache().catch((_e: any): void => {});
-          }
-        }
-
-        console.log('[AppState] KnowledgeOrchestrator initialized');
-      }
-    } catch (error) {
-      console.error('[AppState] Failed to initialize KnowledgeOrchestrator:', error);
-    }
   }
 
   private setupAutoUpdater(): void {
@@ -6660,7 +6414,6 @@ export class AppState {
     // No AI set up: the free trial starts by itself. Below the funnel line on
     // purpose, so `meeting_started.ai` still says what the meeting began with.
     // Fire and forget: the overlay is told when it starts or cannot.
-    try { this.autoStartTrialForMeeting?.(); } catch { /* a trial never blocks a meeting */ }
     this.broadcastMeetingState()
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);
@@ -8247,14 +8000,6 @@ export class AppState {
       } catch (err) {
         console.warn('[Stealth] model-discovery scheduler resume threw (non-fatal):', err);
       }
-      // Catch-up license reconcile skipped while stealth was on (see startup
-      // timer below) — run it now that network is allowed again. Non-fatal.
-      try {
-        const { getProEntitlementReconciler } = require('./services/proEntitlementWiring');
-        void getProEntitlementReconciler().run('stealth-toggle-off');
-      } catch (err) {
-        console.warn('[Stealth] pro-reconcile catch-up threw (non-fatal):', err);
-      }
       // Hindsight: restart local/Cloud server now that network is allowed again.
       try { require('./services/HindsightManager').HindsightManager.getInstance().start().catch(() => {}); } catch (err) {
         console.warn('[Stealth] Hindsight restart threw (non-fatal):', err);
@@ -9515,21 +9260,6 @@ if (process.env.THINKING_MATRIX === '1') {
   // window (including lazily-created pill/toggle/settings/model-selector/cropper
   // and re-created windows) gets the title guard at creation time.
   appState.applyInitialDisguise();
-
-  // A saved Natively key whose plan includes Pro, with no Pro licence on this
-  // device, used to stay that way forever (activation ran once, at key save, and a
-  // 5xx ended it). Reconcile shortly after launch — late enough to stay off the
-  // startup path, and the reconciler makes no request at all unless a real key is
-  // stored and Pro is inactive. See services/ProEntitlementReconciler.ts.
-  const proReconcileTimer = setTimeout(() => {
-    try {
-      const { getProEntitlementReconciler } = require('./services/proEntitlementWiring');
-      void getProEntitlementReconciler().run('startup');
-    } catch (e: any) {
-      console.warn('[Main] Pro entitlement reconcile could not start:', e?.message);
-    }
-  }, 8000);
-  proReconcileTimer.unref?.();
 
   // Opt-in: NATIVELY_LOG_GPU_STATUS=1 logs Chromium's GPU feature status once
   // at boot (whether gpu_compositing/rasterization are 'enabled' vs.

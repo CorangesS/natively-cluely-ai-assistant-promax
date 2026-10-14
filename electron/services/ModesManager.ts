@@ -485,8 +485,8 @@ export class ModesManager {
     }
 
     public getActiveMode(): Mode | null {
-        const row = DatabaseManager.getInstance().getActiveMode();
-        return row ? rowToMode(row) : null;
+        // Archived modes remain on disk but never affect ProMax conversations.
+        return null;
     }
 
     // ── Pinned-mode resolution (audit finding #6) ─────────────────
@@ -497,13 +497,8 @@ export class ModesManager {
     // request is parked at an await. When no id is pinned (every existing
     // caller) this returns the live active mode, so behavior is unchanged.
     private resolveMode(pinnedModeId?: string): Mode | null {
-        if (pinnedModeId) {
-            const pinned = this.getModes().find(m => m.id === pinnedModeId);
-            // Fall back to the active mode only if the pinned mode was deleted
-            // mid-request (rare); otherwise the pinned mode wins.
-            if (pinned) return pinned;
-        }
-        return this.getActiveMode();
+        // Archived modes remain on disk but never affect ProMax conversations.
+        return null;
     }
 
     // ── Active-mode info cache (PI v3, W1) ────────────────────────

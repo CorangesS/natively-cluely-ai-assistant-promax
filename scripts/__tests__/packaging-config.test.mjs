@@ -122,19 +122,10 @@ test('the release workflow allows enough time for the notary retry budget', () =
   );
 });
 
-test('the release workflow checks out only the required premium submodule', () => {
-  const workflow = fs.readFileSync(
-    path.join(repoRoot, '.github', 'workflows', 'release-macos.yml'),
-    'utf8'
-  );
-  assert.doesNotMatch(
-    workflow,
-    /submodules:\s*(?:recursive|true)/,
-    'release should explicitly authenticate and fetch only its required private submodule'
-  );
-  assert.match(workflow, /submodule update --init --force -- premium/);
-  assert.match(workflow, /SUBMODULE_TOKEN\s*\|\|\s*secrets\.GH_APP_TOKEN/);
-  assert.match(workflow, /test -f premium\/electron\/knowledge\/CompanyResearchEngine\.ts/);
+test('the release workflow builds without upstream private credentials', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'release-macos.yml'), 'utf8');
+  assert.doesNotMatch(workflow, /submodules:\s*(?:recursive|true)|submodule update|SUBMODULE_TOKEN|GH_APP_TOKEN/);
+  assert.match(workflow, /npm run build:electron/);
 });
 
 test('renderer builds carry version and commit provenance', () => {

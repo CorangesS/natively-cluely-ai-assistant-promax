@@ -1,12 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import Module from 'node:module';
+// Parser and URL tests need no Electron runtime or real network.
+const originalLoad = Module._load;
+Module._load = function (id, ...args) {
+  if (id === 'electron') return { net: { request() { throw new Error('Unexpected network request'); } } };
+  return originalLoad.call(this, id, ...args);
+};
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { ReleaseNotesManager } = await import(
   pathToFileURL(path.resolve(__dirname, '../../dist-electron/electron/update/ReleaseNotesManager.js')).href
 );
+
+Module._load = originalLoad;
 
 const parse = (body) => {
   const manager = ReleaseNotesManager.getInstance();
@@ -36,13 +45,13 @@ test('release notes parser accepts GitHub H3 headings and emoji-decorated titles
 
 test('release notes manager points at the published GitHub repository', () => {
   const manager = ReleaseNotesManager.getInstance();
-  assert.equal(manager.repoOwner, 'Natively-AI-assistant');
-  assert.equal(manager.repoName, 'natively-cluely-ai-assistant');
+  assert.equal(manager.repoOwner, 'CorangesS');
+  assert.equal(manager.repoName, 'natively-cluely-ai-assistant-promax');
 });
 
 test('release notes lookup tries both tag spellings (V2.8.8 is published with a capital V)', () => {
   const manager = ReleaseNotesManager.getInstance();
-  const base = 'https://api.github.com/repos/Natively-AI-assistant/natively-cluely-ai-assistant/releases';
+  const base = 'https://api.github.com/repos/CorangesS/natively-cluely-ai-assistant-promax/releases';
   for (const version of ['2.8.8', 'v2.8.8', 'V2.8.8']) {
     assert.deepEqual(manager.buildReleaseUrls(version), [`${base}/tags/v2.8.8`, `${base}/tags/V2.8.8`]);
   }

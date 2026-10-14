@@ -1,3 +1,4 @@
+import { normalizeSettingsTab } from '../lib/promaxFeatures';
 import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { LANG_NATIVE_NAMES, useLanguage, useT } from '../i18n';
 import { CalendarSettings } from './settings/CalendarSettings';
@@ -17,7 +18,6 @@ import { AboutSection } from './AboutSection';
 import { ErrorBoundary } from './ErrorBoundary';
 import { HelpSettings } from './settings/HelpSettings';
 import { AIProvidersSettings, AIP_CSS, AipModelList, AipPassedCheck } from './settings/AIProvidersSettings';
-import { PlansSettings } from './settings/PlansSettings';
 import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
 import { RetrievalSettings } from './settings/RetrievalSettings';
 import { IntelligenceSettings } from './settings/IntelligenceSettings';
@@ -44,7 +44,6 @@ import { ModelSelectorLabel } from './ui/ModelSelectorLabel';
 import { MODEL_SELECTOR_WIDTH } from './ui/modelSelectorLabelText';
 import { Disclosure, DisclosureChevron } from './ui/AccordionSection';
 import { Presence, SettingsMenu, SettingsMotionReady } from './settings/SettingsRow';
-import { ProfileVisualizer } from '../premium';
 import GlassEffectLayer from './ui/GlassEffectLayer';
 import { GenieModal } from './ui/GenieModal';
 import { BrandMark, BrandMonogram } from './ui/BrandMark';
@@ -635,7 +634,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     onClose,
     initialTab = 'general',
     initialTabSeq = 0,
-    initialIsPremium = null,
     initialHasNativelyKey = false,
     closeInstantly = false,
     onOpenModes,
@@ -646,7 +644,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     const resolvedTheme = useResolvedTheme();
     const isLight = resolvedTheme === 'light';
     const { t, lang, setLang } = useLanguage();
-    const [activeTab, setActiveTab] = useState(initialTab);
+    const [activeTab, setActiveTab] = useState(normalizeSettingsTab(initialTab));
     // In-window confirms only: see ConfirmDialog.tsx for why never confirm().
     const { confirm: askConfirm, dialog: confirmDialog } = useConfirmDialog();
 
@@ -753,7 +751,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                this on a same-tab open would never clear and would swallow the
                user's first real tab click. */
             if (initialTab !== activeTab) suppressPanelAnimRef.current = true;
-            setActiveTab(initialTab);
+            setActiveTab(normalizeSettingsTab(initialTab));
             setRetrievalRequest({
                 tab: initialTab === 'reranker' ? 'reranker'
                     : initialTab === 'embedding' ? 'embedding'
@@ -2333,14 +2331,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         {activeTab === 'general' && navActivePill}
                                         <Monitor size={16} /> {t('General')}
                                     </button>
-                                    <button
-                                        onClick={() => setActiveTab('plans')}
-                                        className={navItemClass(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro')}
-                                    >
-                                        {(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro') && navActivePill}
-                                        <HiCreditCard size={16} />
-                                        <span>{t('Account')}</span>
-                                    </button>
+
                                     <button
                                         onClick={() => setActiveTab('ai-providers')}
                                         className={navItemClass(activeTab === 'ai-providers')}
@@ -3370,9 +3361,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                             {activeTab === 'skills' && (
                                 <SkillsSettings />
                             )}
-                            {(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro') && (
-                                <PlansSettings initialIsPremium={initialIsPremium} initialHasNativelyKey={hasNativelyKey} />
-                            )}
+
                             {activeTab === 'keybinds' && (
                                 <div className="space-y-5 animated fadeIn select-text pb-4">
                                     <div className="flex items-start justify-between">

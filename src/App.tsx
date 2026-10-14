@@ -12,9 +12,6 @@ import { EXIT_MS, launcherLanding } from "./components/startup/splashTimeline"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { NativelyQuotaBanner } from "./components/NativelyQuotaBanner"
-import { useTrialExpiry }       from "./components/trial/useTrialExpiry"
-import type { TrialUsage, TrialLimits } from './types/nativelyUsage';
-import { FreeTrialModal }       from "./components/trial/FreeTrialModal"
 import { OrchestratorProvider, OrchestratedToasterHost, setUserState as setOrchestratorUserState, emitOrchestratorEvent } from "./components/onboarding/OrchestratedToasterHost"
 // NOTE: explicit `.ts` extension is load-bearing. Vite's default resolver
 // tries `.mjs` before `.ts` (see DEFAULT_EXTENSIONS in vite/dist/node/constants.js),
@@ -35,7 +32,6 @@ import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity 
 import { getMeetingInterfaceTheme, type MeetingInterfaceTheme } from './lib/meetingInterfaceTheme'
 import { permissionsNeedAttention } from './lib/permissionAttentionPolicy.mjs'
 import { collectRendererLegacy } from './lib/cards/rendererLegacy.mjs'
-import { resetRendererTrialClaim } from './lib/trialCampaign.mjs'
 import { cardInputsFromSources } from './lib/cards/cardInputs.mjs'
 import { forcedCardFromQuery } from './lib/onboarding/devOverrides.ts'
 import { isMac } from "./utils/platformUtils"
@@ -43,10 +39,8 @@ import { trackAppOpen } from "./lib/toasterGating"
 import { PREMIUM_ADS_AVAILABLE } from './premium'
 import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
-import ModesSettings from "./components/settings/ModesSettings"
 import { GenieModal } from "./components/ui/GenieModal"
 import { GENIE_CLOSE_MS } from "./components/onboarding/useGenieCard"
-import { ProfileIntelligenceSettings } from "./components/ProfileIntelligenceSettings"
 import { useResolvedTheme } from "./hooks/useResolvedTheme"
 import { useDiagramRenderHost } from "./lib/diagram/diagramRuntime"
 import { WelcomeFlow } from "./components/onboarding/WelcomeFlow"
@@ -391,9 +385,6 @@ const App: React.FC = () => {
       first.focus();
     }
   }, []);
-  const [isPremiumActive, setIsPremiumActive] = useState(false);
-  const [hasLoadedLicense, setHasLoadedLicense] = useState(false);
-  const [planDetails, setPlanDetails] = useState<{ isPremium: boolean; plan?: string; provider?: string }>({ isPremium: false });
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -408,14 +399,13 @@ const App: React.FC = () => {
   const [meetingInterfaceTheme, setMeetingInterfaceThemeState] = useState<MeetingInterfaceTheme>(getMeetingInterfaceTheme);
 
   // Profile state for ad targeting
-  const [hasProfile, setHasProfile] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
 
   // Initialize Ads Campaign Manager
   const [appStartTime] = useState<number>(Date.now());
   const [lastMeetingEndTime, setLastMeetingEndTime] = useState<number | null>(null);
   const [isProcessingMeeting, setIsProcessingMeeting] = useState<boolean>(false);
-  
+
   // Ollama Auto-Pull State
   const [ollamaPullStatus, setOllamaPullStatus] = useState<'idle' | 'downloading' | 'complete' | 'failed'>('idle');
   const [ollamaPullPercent, setOllamaPullPercent] = useState<number>(0);
@@ -438,36 +428,6 @@ const App: React.FC = () => {
 
   // ── Onboarding toasters now handled by OnboardingOrchestrator ──
   // (No local state for permissions / trial promo toasters.)
-
-  // ── Free Trial global state ────────────────────────────────
-  const [activeTrial, setActiveTrial] = useState<{
-    expiresAt: string;
-    usage: TrialUsage;
-    /** The trial's allowances, carried from /v1/trial/status. */
-    limits?: TrialLimits;
-  } | null>(null);
-  // Dev-only: `?forceTrialEnded=1` opens the end-of-trial card for a design check.
-  const [showTrialExpiredModal, setShowTrialExpiredModal] = useState(() =>
-    import.meta.env.DEV && new URLSearchParams(window.location.search).has('forceTrialEnded')
-  );
-  // The card is due (expired at launch) but still inside its 10 s delay: it
-  // already owns the card slot, so no other card can open under it.
-  const [trialEndedDue, setTrialEndedDue] = useState(false);
-  // 0:00: settle the expiry from the LOCAL clock and open the card at once,
-  // offline included, instead of waiting for the next poll (toaster policy §5
-  // row 2).
-  const handleTrialClockExpired = useCallback(() => {
-    window.electronAPI?.getLocalTrial?.().then((local: any) => {
-      if (local?.showEndedCard) { setActiveTrial(null); setShowTrialExpiredModal(true); }
-    }).catch(() => {});
-  }, []);
-  // Launcher only, like the trial poll (toaster policy §7.5). Nothing is drawn
-  // here: the time left is on Home's small trial card (TrialMeterToaster) and
-  // on the trial card in Settings › Plans.
-  useTrialExpiry(
-    !isolateGlobalSurfaces && (isLauncherWindow || isDefault) && activeTrial ? activeTrial.expiresAt : null,
-    handleTrialClockExpired,
-  );
 
   const isManagerOpen = activeManagerPanel !== null;
   const managerContentVariants = {
@@ -499,70 +459,6 @@ const App: React.FC = () => {
   // extension, quota) is read live and re-read whenever it can have changed;
   // the card ledger arrives from main and follows every cards:changed.
   const refreshCardInputsRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    if (!isLauncherWindow && !isDefault) return;
-    const api = window.electronAPI;
-    let disposed = false;
-    // Refreshes overlap (focus, credentials, licence, extension); one carrying
-    // the /usage network call can land after a newer one. Only the latest writes.
-    let refreshSeq = 0;
-    const refresh = async () => {
-      const mine = ++refreshSeq;
-      const [creds, licence, profile, trialLocal, extension] = await Promise.all([
-        api?.getStoredCredentials?.().catch(() => undefined),
-        api?.licenseGetDetails?.().catch(() => undefined),
-        api?.profileGetStatus?.().catch(() => undefined),
-        api?.getLocalTrial?.().catch(() => undefined),
-        api?.phoneMirrorGetInfo?.().catch(() => undefined),
-      ]);
-      const usage = creds?.hasNativelyKey ? await api?.getNativelyUsage?.().catch(() => undefined) : undefined;
-      if (disposed || mine !== refreshSeq) return;
-      setOrchestratorUserState({
-        ...cardInputsFromSources({ creds, licence, profile, trialLocal, extension, usage }),
-        adsAvailable: PREMIUM_ADS_AVAILABLE,
-      });
-    };
-    refreshCardInputsRef.current = () => { void refresh(); };
-    const applyLedger = (ledger: unknown) => {
-      if (!disposed && ledger) setOrchestratorUserState({ cardLedger: ledger as never });
-    };
-    // Hand main this window's pre-ledger card history first (main ignores
-    // every import after the first), then load the ledger. Until it loads, no
-    // card stage shows.
-    let legacy = {};
-    // The trial campaign first: a stale claimed flag would retire the trial promo again.
-    try { resetRendererTrialClaim(localStorage); } catch { /* storage unavailable */ }
-    try { legacy = collectRendererLegacy(localStorage); } catch { /* storage unavailable */ }
-    Promise.resolve(api?.cardsImportLegacy?.(legacy))
-      .catch(() => undefined)
-      .then(() => api?.cardsGet?.())
-      .then((res) => { if (res?.ok) applyLedger(res.ledger); })
-      .catch(() => {});
-    void refresh();
-    const offs = [
-      api?.onCardsChanged?.(applyLedger),
-      api?.onCredentialsChanged?.(() => { void refresh(); }),
-      // Trial start, end and expiry all broadcast credentials-changed too
-      // (syncNativelyModelRuntime), so they need no subscription of their own.
-      api?.onLicenseStatusChanged?.(() => { void refresh(); }),
-      api?.onPhoneMirrorStatus?.(() => { void refresh(); }),
-    ];
-    // Quota climbs during the day: re-read on focus, at most every 5 minutes,
-    // so Max/Ultra can meet a Pro user who crossed 80 % without a relaunch.
-    let lastFocusRefresh = Date.now();
-    const onFocus = () => {
-      const now = Date.now();
-      if (now - lastFocusRefresh < CARD_INPUTS_FOCUS_REFRESH_MS) return;
-      lastFocusRefresh = now;
-      void refresh();
-    };
-    window.addEventListener('focus', onFocus);
-    return () => {
-      disposed = true;
-      window.removeEventListener('focus', onFocus);
-      offs.forEach((off) => { try { off?.(); } catch { /* already gone */ } });
-    };
-  }, [isLauncherWindow, isDefault]);
 
   // Profile / JD edits happen in the managers and keys in Settings: re-read
   // the inputs when either closes.
@@ -570,11 +466,6 @@ const App: React.FC = () => {
     if (!isSettingsOpen && !isManagerOpen) refreshCardInputsRef.current();
   }, [isSettingsOpen, isManagerOpen]);
 
-  // The Trial ended card owns the screen while it is open.
-  useEffect(() => {
-    if (!isLauncherWindow && !isDefault) return;
-    setOrchestratorUserState({ trialEndedOpen: showTrialExpiredModal || trialEndedDue });
-  }, [showTrialExpiredModal, trialEndedDue, isLauncherWindow, isDefault]);
 
   // Start the onboarding orchestrator (launcher window only). Stages are
   // registered lazily; the drain loop only runs while foreground + homepage
@@ -620,14 +511,6 @@ const App: React.FC = () => {
   }, [isLauncherWindow, isDefault, isolateOnboarding]);
 
   // Push user-state patches to the orchestrator as plan/profile state evolves.
-  useEffect(() => {
-    setOrchestratorUserState({
-      isPremium: isPremiumActive,
-      hasProfile,
-      hasNativelyKey: hasNativelyApi,
-      hasTrialToken: !!activeTrial,
-    });
-  }, [isPremiumActive, hasProfile, hasNativelyApi, activeTrial]);
 
   // Pause the orchestrator while a foreground settings surface is open so
   // toasters never appear over the user's settings interaction. On the way
@@ -739,129 +622,6 @@ const App: React.FC = () => {
     } else {
       fallbackLocal();
     }
-
-    // Basic status check for campaign targeting
-    window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => {});
-    // Load full plan details for targeted ad delivery (plan tier + provider).
-    window.electronAPI?.licenseGetDetails?.()
-      .then(details => {
-        setPlanDetails(details ?? { isPremium: false });
-        setIsPremiumActive(details?.isPremium ?? false);
-        setHasLoadedLicense(true);
-      })
-      .catch(() => {
-        // Fallback: async premium check if licenseGetDetails is unavailable
-        const premiumCheck = window.electronAPI?.licenseCheckPremiumAsync ?? window.electronAPI?.licenseCheckPremium;
-        if (premiumCheck) {
-          premiumCheck().then((active: boolean) => {
-            setIsPremiumActive(active);
-            setPlanDetails({ isPremium: active });
-            setHasLoadedLicense(true);
-          }).catch(() => setHasLoadedLicense(true));
-        } else {
-          setHasLoadedLicense(true);
-        }
-      });
-
-    // Also check for Natively API key
-    window.electronAPI?.getStoredCredentials?.()
-      .then((creds) => setHasNativelyApi(!!creds?.hasNativelyKey))
-      .catch(() => {});
-
-    // ── Trial: check stored token and start polling if active ──
-    // Only the launcher keeps the trial clock (toaster policy §7.5): App also
-    // mounts in the overlay, and every poll there could settle the expiry too.
-    const ownsTrialClock = isLauncherWindow || isDefault;
-    let trialPollId: ReturnType<typeof setInterval> | null = null;
-    let trialEndedTimer: ReturnType<typeof setTimeout> | null = null;
-    const checkTrial = async () => {
-      try {
-        const res = await window.electronAPI?.getTrialStatus?.();
-        if (!res?.ok) return;
-        if (res.expired) {
-          setActiveTrial(null);
-          // Main settles the expiry: the profile wipe runs there, once per trial
-          // and never for a licensed user, and main says whether the user still
-          // has to choose (toaster policy Phase 0, settleExpiredTrial).
-          if (res.showEndedCard) setShowTrialExpiredModal(true);
-          if (trialPollId) { clearInterval(trialPollId); trialPollId = null; }
-        } else {
-          setActiveTrial({
-            expiresAt: res.expires_at ?? '',
-            usage:     res.usage     ?? { ai: 0, ai_tokens: 0, stt_seconds: 0, search: 0 },
-            limits:    (res as { limits?: TrialLimits }).limits,
-          });
-        }
-      } catch { /* ignore — non-critical */ }
-    };
-    if (ownsTrialClock) window.electronAPI?.getLocalTrial?.().then((local: any) => {
-      if (!local?.hasToken) return;
-      if (local.expired) {
-        // Already expired at launch. Main has settled it (wiped once if due) and
-        // says whether the user still has to choose; a licence or key replaced
-        // the trial otherwise, and the token is already gone.
-        if (local.showEndedCard) {
-          setTrialEndedDue(true);
-          trialEndedTimer = setTimeout(() => { trialEndedTimer = null; setShowTrialExpiredModal(true); }, 10_000);
-        }
-        return;
-      }
-      // Seed the trial from the LOCAL token before the first poll answers.
-      //
-      // This is the "closed the app and reopened it inside the 30 minutes and
-      // the trial was gone" report. The trial was fine — the countdown just
-      // had nothing to render: activeTrial was only ever set from
-      // checkTrial(), a network call, so on every relaunch the banner stayed
-      // absent until /v1/trial/status came back, and stayed absent FOREVER if
-      // that call failed (it returns early on !ok, offline included).
-      //
-      // expiresAt is stored locally at start, so the clock is already knowable
-      // offline. Usage starts at zero and is replaced by the poll below —
-      // the settings panel has seeded itself exactly this way all along.
-      setActiveTrial({
-        expiresAt: local.expiresAt ?? '',
-        usage: { ai: 0, ai_tokens: 0, stt_seconds: 0, search: 0 },
-      });
-      checkTrial();
-      trialPollId = setInterval(checkTrial, 30_000);
-    }).catch(() => {});
-
-    // Listen for trial-ended event (emitted by trial:end-byok IPC)
-    const removeTrialListener = window.electronAPI?.onTrialEnded?.((data) => {
-      setActiveTrial(null);
-      // The BYOK exit is announced while its card is still Cleaning up; that
-      // card closes itself once the user leaves "All set". Every other ending
-      // (a licence or key superseded the trial) takes the card away.
-      if (data?.choice !== 'byok') {
-        setShowTrialExpiredModal(false);
-        setTrialEndedDue(false);
-      }
-      if (trialEndedTimer) { clearTimeout(trialEndedTimer); trialEndedTimer = null; }
-      if (trialPollId) { clearInterval(trialPollId); trialPollId = null; }
-    });
-
-    // …and for a trial STARTED mid-session (trial:start IPC). Until this existed
-    // the trial state above was read exactly once, on mount, so pressing Start
-    // anywhere — the settings card or the promo toaster — left this component
-    // believing there was no trial: no countdown banner, and both Pro managers
-    // (Modes, Profile Intelligence) still showing their gate, until a relaunch.
-    const removeTrialStartedListener = window.electronAPI?.onTrialStarted?.((data) => {
-      setActiveTrial({
-        expiresAt: data?.expiresAt ?? '',
-        usage: data?.usage ?? { ai: 0, ai_tokens: 0, stt_seconds: 0, search: 0 },
-        limits: data?.limits as TrialLimits | undefined,
-      });
-      setShowTrialExpiredModal(false);
-      setTrialEndedDue(false);
-      // Start the status poll if the mount path did not (it only starts one when
-      // a token already existed). Guarded so a re-issue of the same trial — the
-      // API is idempotent per hardware id — cannot leak a second interval, which
-      // would also be the only thing that ever notices this trial expiring.
-      if (ownsTrialClock && !trialPollId) {
-        checkTrial();
-        trialPollId = setInterval(checkTrial, 30_000);
-      }
-    });
 
     // ── Onboarding orchestrator — push user-state patches ─────
     // The orchestrator owns scheduling; we just feed it the latest user state.
@@ -1001,13 +761,6 @@ const App: React.FC = () => {
       });
     }
 
-    // Listen for real-time license status changes (activation, revocation, deactivation)
-    const removeLicenseListener = window.electronAPI?.onLicenseStatusChanged?.((data) => {
-      setIsPremiumActive(data.isPremium);
-      setPlanDetails(prev => ({ ...prev, isPremium: data.isPremium, ...(data.plan ? { plan: data.plan } : {}) }));
-      setHasLoadedLicense(true);
-    });
-
     return () => {
       if (removeMeetingsListener) removeMeetingsListener();
       if (removeProgress) removeProgress();
@@ -1020,11 +773,6 @@ const App: React.FC = () => {
       if (bannerResetTimer) clearTimeout(bannerResetTimer);
       if (embeddingNoticeTimer) clearTimeout(embeddingNoticeTimer);
       if (removeReindexProgress) removeReindexProgress();
-      if (removeLicenseListener) removeLicenseListener();
-      if (trialPollId) clearInterval(trialPollId);
-      if (trialEndedTimer) clearTimeout(trialEndedTimer);
-      if (removeTrialListener) removeTrialListener();
-      if (removeTrialStartedListener) removeTrialStartedListener();
       if (removeOpenSettingsTab) removeOpenSettingsTab();
     }
   }, []);
@@ -1375,8 +1123,6 @@ const App: React.FC = () => {
                     request={launcherRequest}
                     onStartMeeting={handleStartMeeting}
                     onOpenSettings={(tab = 'general') => openSettingsExclusive(tab)}
-                    onOpenProfile={() => openProfileExclusive()}
-                    onOpenModes={() => openModesExclusive()}
                     onPageChange={setIsLauncherMainView}
                     ollamaPullStatus={ollamaPullStatus}
                     ollamaPullPercent={ollamaPullPercent}
@@ -1390,11 +1136,8 @@ const App: React.FC = () => {
                   }}
                   initialTab={settingsNav.tab}
                   initialTabSeq={settingsNav.seq}
-                  initialIsPremium={hasLoadedLicense ? isPremiumActive : null}
                   initialHasNativelyKey={hasNativelyApi}
                   closeInstantly={isManagerOpen}
-                  onOpenModes={openModesExclusive}
-                  onOpenProfile={openProfileExclusive}
                   onOpenSearch={openLauncherSearch}
                   onOpenMeeting={openLauncherMeeting}
                 />
@@ -1404,63 +1147,7 @@ const App: React.FC = () => {
                     open, not on which panel it shows, so switching panels keeps
                     its crossfade. Handing over to Settings skips the close: only
                     the incoming card pours. */}
-                <GenieModal
-                  open={activeManagerPanel !== null}
-                  label="ManagerPanel"
-                  // One picture set per panel. On close the panel is already
-                  // null, so the last one shown names it.
-                  snapshotKey={`manager:${activeManagerPanel ?? lastManagerPanelRef.current}`}
-                  // Profile Intelligence always opens on Identity; Modes opens
-                  // on whichever mode it restores, which the genie remembers.
-                  openingView={(activeManagerPanel ?? lastManagerPanelRef.current) === 'profile' ? 'identity' : undefined}
-                  closeInstantly={isSettingsOpen}
-                  onBackdropClick={closeManagerPanel}
-                  onOpened={() => managerDialogRef.current?.focus()}
-                  backdropClassName={isLight ? 'bg-black/[0.06]' : 'bg-black/60'}
-                  wrapClassName="w-[820px] h-[600px] max-w-[95vw] max-h-[90vh]"
-                  cardRef={managerDialogRef}
-                  cardClassName={`manager-panel-shell rounded-2xl border border-border-muted bg-bg-elevated ${isLight ? 'shadow-[0_0_0_1px_rgba(0,0,0,0.06),0_24px_48px_-12px_rgba(0,0,0,0.16),0_8px_16px_-6px_rgba(0,0,0,0.06)]' : 'shadow-2xl'}`}
-                  cardProps={{
-                    'data-testid': 'manager-panel-host',
-                    role: 'dialog',
-                    'aria-modal': true,
-                    'aria-label': activeManagerPanel === 'modes' ? 'Modes Manager' : 'Profile Intelligence',
-                    tabIndex: -1,
-                    onKeyDown: handleManagerKeyDown,
-                  }}
-                  shadow={isLight ? MANAGER_SHADOW_LIGHT : MANAGER_SHADOW_DARK}
-                  radius={16}
-                >
-                  {activeManagerPanel && (
-                    <AnimatePresence mode="wait" initial={false}>
-                    <motion.div
-                      key={activeManagerPanel}
-                      data-testid={`manager-panel-${activeManagerPanel}`}
-                      variants={managerContentVariants}
-                      initial="initial"
-                      animate="animate"
-                      exit="exit"
-                      className="h-full w-full"
-                    >
-                      {activeManagerPanel === 'modes' ? (
-                        <ModesSettings
-                          onClose={closeManagerPanel}
-                          isPremium={isPremiumActive}
-                          isLoaded={hasLoadedLicense}
-                          isTrialActive={!!activeTrial}
-                          onOpenNativelyAPI={() => openSettingsExclusive('plans')}
-                        />
-                      ) : (
-                        <ProfileIntelligenceSettings
-                          onClose={closeManagerPanel}
-                          isTrialActive={!!activeTrial}
-                          onOpenNativelyAPI={() => openSettingsExclusive('plans')}
-                        />
-                      )}
-                    </motion.div>
-                    </AnimatePresence>
-                  )}
-                </GenieModal>
+
                 <ToastViewport />
               </ToastProvider>
             </QueryClientProvider>
@@ -1481,44 +1168,16 @@ const App: React.FC = () => {
 
       <div data-opacity-preview-surface="">
         {!isolateGlobalSurfaces && <UpdateBanner />}
-        {!isolateGlobalSurfaces && <NativelyQuotaBanner />}
+
         {/* The running trial's clock and its two allowances, on Home only. */}
 
         {/* Orchestrated onboarding toasters (single-slot, controlled by OnboardingOrchestrator) */}
         {/* Not under the first-launch welcome: its cards follow Get started. */}
-        {!isolateOnboarding && showWelcome === false && (
-          <OrchestratorProvider>
-            <OrchestratedToasterHost onOpenSettings={openSettingsExclusive} onOpenProfile={openProfileExclusive} />
-          </OrchestratorProvider>
-        )}
+
 
 
         {/* Functional trial status and API setup, without purchase prompts. */}
-        {!isolateModals && (isLauncherWindow || isDefault) && showTrialExpiredModal && (
-          <FreeTrialModal
-            usage={activeTrial?.usage ?? { ai: 0, ai_tokens: 0, stt_seconds: 0, search: 0 }}
-            onByok={async (opts) => {
-              // A wipe that did not finish must not read as "All set": the card
-              // shows the error with Try again (toaster policy §5 row 5). After
-              // repeated failures it may end the trial anyway (opts.force).
-              const res = await window.electronAPI?.endTrialByok?.(opts);
-              if (!res?.success) throw new Error('wipe_failed');
-              return { wipeIncomplete: !!res.wipeIncomplete };
-            }}
-            onStandard={async () => {
-              // The profile wipe already ran once, at expiry (main,
-              // settleExpiredTrial). Standard has no modes access.
-              await window.electronAPI?.modesSetActive?.(null).catch(() => {});
-            }}
-            onDone={(reason) => {
-              setShowTrialExpiredModal(false);
-              setTrialEndedDue(false);
-              setActiveTrial(null);
-              // "Add my keys" after a finished BYOK exit.
-              if (reason === 'byok') openSettingsExclusive('ai-providers');
-            }}
-          />
-        )}
+
 
       </div>
     </div>
